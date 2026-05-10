@@ -1,0 +1,44 @@
+# ── Virtual environment ───────────────────────────────────────────────────────
+scripts/.venv/
+.venv/
+venv/
+
+# ── Experimental data and datasets (not code) ────────────────────────────────
+results/
+images/
+timelapse/
+calibration/
+A1/
+
+# ── Stray image files ─────────────────────────────────────────────────────────
+scripts/*.jpg
+scripts/*.png
+
+# ── Model weights (large binary files) ────────────────────────────────────────
+best_model.pth
+scripts/sam2_weights/
+*.pt
+*.pth
+
+# ── Claude Code project files ──────────────────────────────────────────────────
+.claude/
+CLAUDE.md
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── Generated output ──────────────────────────────────────────────────────────
+dataset_check.png
+*.tmp.mp4
+
+# ── Personal / planning documents ────────────────────────────────────────────
+LB_Plant_Metric_Solutions_Pitch.md
+pi_setup_plan.md
+project_expansion_roadmap.md
+
+# ── OS and editor files ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
