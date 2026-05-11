@@ -20,7 +20,7 @@ scripts/sam2_weights/
 *.pt
 *.pth
 
-# ── Claude Code project files ──────────────────────────────────────────────────
+# ── Local settings ────────────────────────────────────────────────────────────
 .claude/
 CLAUDE.md
 
