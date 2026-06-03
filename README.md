@@ -1,8 +1,8 @@
 # Growth Chamber CV
 
-Automated plant phenotyping pipeline for *Arabidopsis thaliana* under elevated CO₂. Built for EE496 at Maynooth University.
+Automated plant phenotyping pipeline for *Arabidopsis thaliana* under elevated CO₂.
 
-Two OAK-D Lite stereo cameras capture daily overhead RGB and depth images of sealed mini-chambers — one enriched (800–1200 ppm CO₂) and one control (~420 ppm). A Raspberry Pi runs the pipeline autonomously at noon every day and stores results to CSV.
+Two OAK-D Lite stereo cameras capture daily overhead RGB and depth images of sealed mini-chambers — one enriched (1100ppm) and one control. A Raspberry Pi runs the pipeline autonomously at noon every day and stores results to CSV.
 
 ---
 
