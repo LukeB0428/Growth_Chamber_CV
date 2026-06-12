@@ -5,7 +5,7 @@ A timestamped backup is created automatically before any changes are made.
 
 Functions:
     reset_metrics_csv()  — resets results/metrics.csv     (66 columns, whole-chamber)
-    reset_pot_csv()      — resets results/pot_metrics.csv (67 columns, per-pot)
+    reset_pot_csv()      — resets results/pot_metrics.csv (71 columns, per-pot)
 """
 
 import csv
@@ -46,7 +46,7 @@ FIELDNAMES = [
     'image_file',
 ]
 
-# 67-column per-pot schema (matches analyse_chamber.py) — adds pot_label
+# 71-column per-pot schema (matches analyse_chamber.py) — adds pot_label
 POT_FIELDNAMES = [
     'timestamp', 'chamber', 'pot_label', 'method',
     'canopy_cover_%', 'exg_mean', 'vari_mean', 'ngrdi_mean',
@@ -61,13 +61,16 @@ POT_FIELDNAMES = [
     'vari_variance', 'vari_min', 'vari_max', 'vari_range',
     'vari_skewness', 'vari_kurtosis', 'vari_q1', 'vari_q3', 'vari_iqr',
     'canopy_height_mean_mm', 'canopy_height_max_mm', 'canopy_volume_cm3', 'soil_baseline_mm',
-    # Stage 15 greenness / colour metrics (12)
+    # Greenness / colour metrics (12)
     'mean_hue', 'mean_saturation', 'mean_value',
     'mean_r', 'mean_g', 'mean_b',
     'gcc', 'lab_L', 'lab_a', 'lab_b',
     'greenness_score', 'green_shade',
-    # Stage 15 composite health score (2)
+    # Composite health score (2)
     'health_score', 'health_label',
+    'plant_status',
+    # Developmental stage (3)
+    'developmental_stage', 'developmental_stage_bbch', 'developmental_stage_conf',
     'image_file',
 ]
 
@@ -85,7 +88,7 @@ def reset_metrics_csv():
 
 
 def reset_pot_csv():
-    """Reset results/pot_metrics.csv with the current 67-column schema."""
+    """Reset results/pot_metrics.csv with the current 71-column schema."""
     if os.path.isfile(POT_CSV):
         backup = POT_CSV.replace('.csv', f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
         shutil.copy(POT_CSV, backup)

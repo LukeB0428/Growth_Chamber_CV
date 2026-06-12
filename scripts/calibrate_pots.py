@@ -145,6 +145,7 @@ class CalibrationTool:
         calib = {
             "chamber":    self.chamber,
             "image_size": [img_w, img_h],
+            "locked":     True,
             "pots":       [
                 {"label": p[3], "x": p[0], "y": p[1], "r": p[2]}
                 for p in self.circles

@@ -1,10 +1,12 @@
 """
-repair_csv.py — Fixes metrics.csv column inconsistencies
+repair_csv.py — Pads old CSV rows to match the current schema
 EE496 | Luke Buckley | Maynooth University
 
-Run this once to repair metrics.csv rows written by older versions of
-analyse_image.py that had fewer columns. Pads missing columns with empty
-values so all rows match the current 66-column schema.
+Repairs both results/metrics.csv (whole-chamber) and results/pot_metrics.csv
+(per-pot). Any row written by an older version of the pipeline that is missing
+columns will have those columns padded with empty strings.
+
+A timestamped backup is created before any changes are written.
 
 Usage:
     python repair_csv.py
@@ -14,11 +16,14 @@ import csv
 import os
 import shutil
 from datetime import datetime
-from config import METRICS_CSV
+from config import METRICS_CSV, POT_METRICS_CSV
 
-METRICS_CSV = str(METRICS_CSV)
+# ─────────────────────────────────────────────
+# SCHEMAS
+# ─────────────────────────────────────────────
 
-FIELDNAMES = [
+# Whole-chamber metrics (results/metrics.csv)
+WHOLE_FIELDNAMES = [
     'timestamp', 'chamber', 'method',
     'canopy_cover_%', 'exg_mean', 'vari_mean', 'ngrdi_mean',
     'rosette_diameter_px', 'rosette_area_px', 'rgr',
@@ -34,71 +39,111 @@ FIELDNAMES = [
     'vari_mean_stat', 'vari_median', 'vari_mode', 'vari_std',
     'vari_variance', 'vari_min', 'vari_max', 'vari_range',
     'vari_skewness', 'vari_kurtosis', 'vari_q1', 'vari_q3', 'vari_iqr',
-    # Stage 4 depth metrics (4)
+    # Depth metrics (4)
     'canopy_height_mean_mm', 'canopy_height_max_mm', 'canopy_volume_cm3', 'soil_baseline_mm',
-    # Stage 15 greenness / colour metrics (12)
+    # Greenness / colour metrics (12)
     'mean_hue', 'mean_saturation', 'mean_value',
     'mean_r', 'mean_g', 'mean_b',
     'gcc', 'lab_L', 'lab_a', 'lab_b',
     'greenness_score', 'green_shade',
-    # Stage 15 composite health score (2)
+    # Composite health score (2)
     'health_score', 'health_label',
     'image_file',
 ]
 
-if not os.path.isfile(METRICS_CSV):
-    print(f"No CSV found at {METRICS_CSV}")
-    exit(0)
+# Per-pot metrics (results/pot_metrics.csv) — must stay in sync with POT_FIELDNAMES
+# in analyse_chamber.py
+POT_FIELDNAMES = [
+    'timestamp', 'chamber', 'pot_label', 'method',
+    'canopy_cover_%', 'exg_mean', 'vari_mean', 'ngrdi_mean',
+    'rosette_diameter_px', 'rosette_area_px', 'rgr',
+    'chlorosis_pct', 'necrosis_pct', 'curl_score', 'symmetry_score', 'lai',
+    'leaf_count', 'germination_flag', 'germination_date',
+    'bolting_flag', 'bolting_date', 'bolting_signals',
+    # NGRDI distribution stats (13)
+    'ngrdi_mean_stat', 'ngrdi_median', 'ngrdi_mode', 'ngrdi_std',
+    'ngrdi_variance', 'ngrdi_min', 'ngrdi_max', 'ngrdi_range',
+    'ngrdi_skewness', 'ngrdi_kurtosis', 'ngrdi_q1', 'ngrdi_q3', 'ngrdi_iqr',
+    # VARI distribution stats (13)
+    'vari_mean_stat', 'vari_median', 'vari_mode', 'vari_std',
+    'vari_variance', 'vari_min', 'vari_max', 'vari_range',
+    'vari_skewness', 'vari_kurtosis', 'vari_q1', 'vari_q3', 'vari_iqr',
+    # Depth metrics (4)
+    'canopy_height_mean_mm', 'canopy_height_max_mm', 'canopy_volume_cm3', 'soil_baseline_mm',
+    # Greenness / colour metrics (12)
+    'mean_hue', 'mean_saturation', 'mean_value',
+    'mean_r', 'mean_g', 'mean_b',
+    'gcc', 'lab_L', 'lab_a', 'lab_b',
+    'greenness_score', 'green_shade',
+    # Composite health score (2)
+    'health_score', 'health_label',
+    'plant_status',
+    # Developmental stage (3)
+    'developmental_stage', 'developmental_stage_bbch', 'developmental_stage_conf',
+    'image_file',
+]
 
-# Backup first
-backup_path = METRICS_CSV.replace('.csv', f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
-shutil.copy(METRICS_CSV, backup_path)
-print(f"Backup saved to {backup_path}")
 
-# Read all rows tolerantly
-rows = []
-with open(METRICS_CSV, 'r', newline='') as f:
-    content = f.read()
+# ─────────────────────────────────────────────
+# REPAIR FUNCTION
+# ─────────────────────────────────────────────
 
-lines = [l for l in content.strip().splitlines() if l.strip()]
-if not lines:
-    print("CSV is empty")
-    exit(0)
+def repair(csv_path, fieldnames, label):
+    csv_path = str(csv_path)
 
-# Find header line
-header = None
-data_lines = []
-for line in lines:
-    if line.startswith('timestamp'):
-        header = line.split(',')
-        break
+    if not os.path.isfile(csv_path):
+        print(f"[{label}] Not found — nothing to repair")
+        return
 
-for line in lines:
-    if not line.startswith('timestamp'):
-        data_lines.append(line)
+    backup = csv_path.replace('.csv', f'_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
+    shutil.copy(csv_path, backup)
+    print(f"[{label}] Backup saved: {backup}")
 
-if header is None:
-    print("Could not find header row")
-    exit(0)
+    with open(csv_path, 'r', newline='') as f:
+        content = f.read()
 
-print(f"Found header with {len(header)} columns")
-print(f"Found {len(data_lines)} data rows")
+    lines = [l for l in content.strip().splitlines() if l.strip()]
+    if not lines:
+        print(f"[{label}] CSV is empty — nothing to repair")
+        return
 
-# Rewrite with full schema
-repaired_rows = []
-for line in data_lines:
-    values = line.split(',')
-    row = {}
-    for i, col in enumerate(header):
-        row[col.strip()] = values[i].strip() if i < len(values) else ''
-    # Fill in any missing columns from new schema
-    full_row = {col: row.get(col, '') for col in FIELDNAMES}
-    repaired_rows.append(full_row)
+    header = None
+    for line in lines:
+        if line.startswith('timestamp'):
+            header = line.split(',')
+            break
 
-with open(METRICS_CSV, 'w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-    writer.writeheader()
-    writer.writerows(repaired_rows)
+    if header is None:
+        print(f"[{label}] Could not find header row — aborting")
+        return
 
-print(f"Repaired {len(repaired_rows)} rows — all now have {len(FIELDNAMES)} columns")
-print(f"CSV saved to {METRICS_CSV}")
+    data_lines = [l for l in lines if not l.startswith('timestamp')]
+    print(f"[{label}] Header: {len(header)} columns -> target: {len(fieldnames)} columns")
+    print(f"[{label}] Data rows: {len(data_lines)}")
+
+    new_cols = [c for c in fieldnames if c not in header]
+    if new_cols:
+        print(f"[{label}] New columns being added: {new_cols}")
+
+    repaired = []
+    for line in data_lines:
+        values = line.split(',')
+        row = {header[i].strip(): values[i].strip() if i < len(values) else ''
+               for i in range(len(header))}
+        repaired.append({col: row.get(col, '') for col in fieldnames})
+
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(repaired)
+
+    print(f"[{label}] Repaired {len(repaired)} rows -- {len(fieldnames)} columns each\n")
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+if __name__ == "__main__":
+    repair(METRICS_CSV,     WHOLE_FIELDNAMES, "metrics.csv")
+    repair(POT_METRICS_CSV, POT_FIELDNAMES,   "pot_metrics.csv")

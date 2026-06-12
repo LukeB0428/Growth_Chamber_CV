@@ -48,6 +48,9 @@ if sys.platform == "win32":
 else:
     PYTHON_BIN = SCRIPTS_DIR / ".venv" / "bin" / "python"
 
+# ── Species configuration ─────────────────────────────────────────────────────
+SPECIES_CONFIG_DIR = BASE_DIR / "config" / "species"
+
 # ── Entry-point scripts (used by scheduler and dashboard) ────────────────────
 CAPTURE_SCRIPT  = SCRIPTS_DIR / "capture_image.py"
 ANALYSE_SCRIPT  = SCRIPTS_DIR / "analyse_chamber.py"
