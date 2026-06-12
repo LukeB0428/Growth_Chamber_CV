@@ -52,7 +52,7 @@ CHAMBERS      = ["enriched", "control"]
 CHAMBER_COLOURS = {"enriched": "#2ecc71", "control": "#9C27B0"}
 
 # Timelapse settings
-TIMELAPSE_FPS        = 1     # Frames per second — 1 second per day
+TIMELAPSE_FPS        = 2     # Frames per second — 0.5 seconds per day
 TIMELAPSE_RESOLUTION = (1280, 960)  # Width x Height of output video
 
 

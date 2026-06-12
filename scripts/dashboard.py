@@ -157,8 +157,14 @@ def load_metrics():
         return pd.DataFrame()
     skip = {'timestamp', 'chamber', 'pot_label', 'image_file', 'image_path', 'method',
             'germination_date', 'bolting_date', 'bolting_signals', 'green_shade', 'health_label',
-            'plant_status'}
+            'plant_status', 'developmental_stage'}
     numeric = [c for c in pot_df.columns if c not in skip]
+    # Exclude confirmed dead pots so they don't drag down chamber averages (Fix 3)
+    _dead_pots = get_confirmed_dead_pots(pot_df)
+    if _dead_pots:
+        pot_df = pot_df[~pot_df.apply(
+            lambda r: (r['chamber'], r['pot_label']) in _dead_pots, axis=1
+        )]
     pot_df['_date'] = pot_df['timestamp'].dt.date
     agg = pot_df.groupby(['_date', 'chamber'])[numeric].mean().reset_index()
     agg['timestamp'] = pd.to_datetime(agg['_date'])
@@ -177,10 +183,42 @@ def load_pot_metrics():
     if df.empty:
         return df
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    numeric = [c for c in df.columns if c not in ('timestamp', 'chamber', 'pot_label', 'image_path', 'method', 'plant_status', 'health_label', 'image_file')]
+    numeric = [c for c in df.columns if c not in (
+        'timestamp', 'chamber', 'pot_label', 'image_path', 'method',
+        'plant_status', 'health_label', 'image_file',
+        'bolting_date', 'bolting_signals', 'germination_date', 'green_shade',
+        'developmental_stage',
+    )]
     for c in numeric:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     return df
+
+
+def get_confirmed_dead_pots(df, min_days=5, threshold=0.5):
+    """
+    Return set of (chamber, pot_label) tuples confirmed permanently dead.
+    A pot qualifies if canopy_cover_% stayed below threshold for min_days
+    consecutive days at any point. Once dead, stays dead.
+    """
+    confirmed = set()
+    if 'canopy_cover_%' not in df.columns:
+        return confirmed
+    for (chamber, pot), grp in df.groupby(['chamber', 'pot_label']):
+        streak = 0
+        for v in grp.sort_values('timestamp')['canopy_cover_%'].fillna(0):
+            streak = streak + 1 if v < threshold else 0
+            if streak >= min_days:
+                confirmed.add((chamber, pot))
+                break
+    return confirmed
+
+
+def get_ever_bolted_pots(df):
+    """Return set of (chamber, pot_label) that have ever had bolting_flag = 1."""
+    if 'bolting_flag' not in df.columns:
+        return set()
+    bolted = df[pd.to_numeric(df['bolting_flag'], errors='coerce') == 1]
+    return set(zip(bolted['chamber'], bolted['pot_label']))
 
 
 @st.cache_data(ttl=60)
@@ -357,7 +395,6 @@ if page == "Overview":
     health_metrics = [
         ('health_score',         'Health Score',     '{:.0f}/100'),
         ('lai',                  'LAI',              '{:.2f}'),
-        ('canopy_height_mean_mm','Canopy Height',    '{:.0f} mm'),
         ('leaf_count',           'Leaf Count',       '{:.0f}'),
     ]
 
@@ -373,21 +410,16 @@ if page == "Overview":
         cols2[i].metric(label=label, value=vals[0], delta=vals[1] if len(vals) > 1 else None)
 
     # ── Bolting status ────────────────────────────────────────────────────────
-    if 'bolting_flag' in day_df.columns:
-        st.markdown("<div class='section-title'>Bolting Status</div>", unsafe_allow_html=True)
-        bolt_cols = st.columns(len(selected_chambers))
-        for col, chamber in zip(bolt_cols, selected_chambers):
-            row = day_df[day_df['chamber'] == chamber]
-            if not row.empty:
-                flag = row['bolting_flag'].values[0]
-                date = row['bolting_date'].values[0] if 'bolting_date' in row.columns else None
-                signals = row['bolting_signals'].values[0] if 'bolting_signals' in row.columns else None
-                if pd.notna(flag) and int(flag) == 1:
-                    date_str = f" — detected {date}" if pd.notna(date) else ""
-                    sig_str  = f"Signals: {signals}" if pd.notna(signals) else ""
-                    col.error(f"🌱 BOLTING — {chamber.capitalize()}{date_str}\n{sig_str}")
-                else:
-                    col.success(f"No bolting — {chamber.capitalize()}")
+    _pot_df_ov = load_pot_metrics()
+    st.markdown("<div class='section-title'>Bolting Status</div>", unsafe_allow_html=True)
+    bolt_cols = st.columns(len(selected_chambers))
+    _ever_bolted_ov = get_ever_bolted_pots(_pot_df_ov) if not _pot_df_ov.empty else set()
+    for col, chamber in zip(bolt_cols, selected_chambers):
+        n_bolt = sum(1 for (ch, _) in _ever_bolted_ov if ch == chamber)
+        col.metric(
+            label=f"{chamber.capitalize()} — Bolting",
+            value=f"{n_bolt} / 8 pots",
+        )
 
     # ── Full metrics table ────────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Full Metrics Table</div>", unsafe_allow_html=True)
@@ -395,7 +427,6 @@ if page == "Overview":
     display_cols = [c for c in [
         'chamber', 'canopy_cover_%', 'exg_mean', 'vari_mean', 'ngrdi_mean',
         'lai', 'leaf_count', 'health_score',
-        'canopy_height_mean_mm', 'canopy_volume_cm3',
         'chlorosis_pct', 'necrosis_pct', 'rgr',
         'bolting_flag', 'bolting_date', 'bolting_signals',
     ] if c in day_df.columns]
@@ -458,6 +489,12 @@ elif page == "Growth Trends":
         st.warning("Select at least one chamber.")
         st.stop()
 
+    smooth_trends = st.checkbox(
+        "Smooth trends (3-day rolling median)",
+        value=True,
+        help="Suppresses single-day lighting artefacts. Raw data is unchanged in the CSV.",
+    )
+
     df_filt = df[
         (df['timestamp'].dt.date >= date_range[0]) &
         (df['timestamp'].dt.date <= date_range[1]) &
@@ -475,8 +512,6 @@ elif page == "Growth Trends":
         'health_score':           'Health Score (0–100)',
         'chlorosis_pct':          'Chlorosis %',
         'necrosis_pct':           'Necrosis %',
-        'canopy_height_mean_mm':  'Mean Canopy Height (mm)',
-        'canopy_volume_cm3':      'Canopy Volume (cm³)',
     }
 
     available_metrics = {k: v for k, v in TREND_METRICS.items() if k in df.columns}
@@ -493,6 +528,14 @@ elif page == "Growth Trends":
         sub = df_filt[df_filt['chamber'] == chamber][['timestamp', selected_metric]].dropna()
         if sub.empty:
             continue
+        sub = sub.sort_values('timestamp')
+        if smooth_trends:
+            sub = sub.copy()
+            sub[selected_metric] = (
+                sub[selected_metric]
+                .rolling(window=3, center=True, min_periods=1)
+                .median()
+            )
         fig.add_trace(go.Scatter(
             x=sub['timestamp'], y=sub[selected_metric],
             mode='lines+markers',
@@ -575,6 +618,22 @@ elif page == "Per-Pot Dashboard":
         st.info("No per-pot data yet. Per-pot analysis requires a calibration JSON — run `calibrate_pots.py` after physical setup.")
         st.stop()
 
+    # Dead pot persistence: once a pot has 5+ consecutive days below 0.5% canopy
+    # it is locked as dead — later intrusion readings are zeroed out in the display.
+    df = df.copy()
+    _confirmed_dead = get_confirmed_dead_pots(df)
+    for (_ch, _pot) in _confirmed_dead:
+        _mask = (df['chamber'] == _ch) & (df['pot_label'] == _pot)
+        df.loc[_mask, 'canopy_cover_%'] = 0.0
+        df.loc[_mask, 'plant_status'] = 'dead'
+        df.loc[_mask, 'health_score'] = 0.0  # Fix 6: dead plants have health score 0
+
+    # Bolting persistence: once a pot has ever bolted, keep it flagged (Fix 5)
+    _ever_bolted = get_ever_bolted_pots(df)
+    for (_ch, _pot) in _ever_bolted:
+        _mask = (df['chamber'] == _ch) & (df['pot_label'] == _pot)
+        df.loc[_mask, 'bolting_flag'] = 1
+
     # Derive actual pot labels and chambers from the data (not hardcoded)
     all_pot_labels   = sorted(df['pot_label'].unique())
     all_chambers     = sorted(df['chamber'].unique())
@@ -592,11 +651,10 @@ elif page == "Per-Pot Dashboard":
         'chlorosis_pct':        'Chlorosis (%)',
         'necrosis_pct':         'Necrosis (%)',
         'rosette_diameter_px':  'Rosette Diameter (px)',
-        'canopy_height_mean_mm':'Canopy Height Mean (mm)',
-        'canopy_height_max_mm': 'Canopy Height Max (mm)',
-        'canopy_volume_cm3':    'Canopy Volume (cm³)',
-        'soil_baseline_mm':     'Soil Baseline (mm)',
+        # soil_baseline_mm excluded — camera-to-soil distance (calibration constant, not growth metric)
+        # height columns excluded — stereo depth unreliable for small plants at this camera height
         'bolting_flag':         'Bolting Flag (0/1)',
+        'greenness_score':      'Greenness Score',
     }.items() if k in df.columns}
 
     # ── Controls ──────────────────────────────────────────────────────────────
@@ -641,27 +699,70 @@ elif page == "Per-Pot Dashboard":
     )
 
     day_df           = df[df['timestamp'].dt.date == sel_date]
-    chambers_present = [c for c in pot_chambers_sel if c in day_df['chamber'].values]
-    GRID_R, GRID_C   = 2, 4
+    # Enriched always shown first
+    chambers_present = sorted(
+        [c for c in pot_chambers_sel if c in day_df['chamber'].values],
+        key=lambda c: (0 if c == 'enriched' else 1)
+    )
+    GRID_R, GRID_C = 2, 4
+
+    # Previous day's data for trend arrows
+    prev_dates  = [d for d in available_dates if d < sel_date]
+    prev_day_df = df[df['timestamp'].dt.date == prev_dates[0]] if prev_dates else pd.DataFrame()
+
+    # Summary chips — healthy / bolting / dead count per chamber
+    summary_cols = st.columns(max(len(chambers_present), 1))
+    for scol, chamber in zip(summary_cols, chambers_present):
+        ch_pots_today = day_df[day_df['chamber'] == chamber]['pot_label'].unique()
+        n_dead   = sum(1 for p in ch_pots_today if (chamber, p) in _confirmed_dead)
+        n_bolt   = sum(1 for p in ch_pots_today if (chamber, p) in _ever_bolted and (chamber, p) not in _confirmed_dead)
+        n_health = len(ch_pots_today) - n_dead - n_bolt
+        chips = []
+        if n_health > 0:
+            chips.append(f"<span style='background:#1a4d1a;color:#81C784;padding:2px 8px;border-radius:10px;font-size:0.8rem'>● {n_health} healthy</span>")
+        if n_bolt > 0:
+            chips.append(f"<span style='background:#3d3000;color:#FFD700;padding:2px 8px;border-radius:10px;font-size:0.8rem'>⚡ {n_bolt} bolting</span>")
+        if n_dead > 0:
+            chips.append(f"<span style='background:#2a2a2a;color:#888;padding:2px 8px;border-radius:10px;font-size:0.8rem'>✕ {n_dead} dead</span>")
+        scol.markdown("&nbsp; ".join(chips), unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
 
     hmap_cols = st.columns(max(len(chambers_present), 1))
     for hcol, chamber in zip(hmap_cols, chambers_present):
-        # Use pot labels present for this chamber on this date, sorted
         ch_pots = sorted(day_df[day_df['chamber'] == chamber]['pot_label'].unique())
-        # Pad to 8 slots
         grid = np.full((GRID_R, GRID_C), np.nan)
         text = [["" for _ in range(GRID_C)] for _ in range(GRID_R)]
 
         for idx in range(GRID_R * GRID_C):
             r, c = idx // GRID_C, idx % GRID_C
             if idx < len(ch_pots):
-                pot = ch_pots[idx]
+                pot     = ch_pots[idx]
+                is_dead = (chamber, pot) in _confirmed_dead
+                is_bolt = (chamber, pot) in _ever_bolted
                 sub = day_df[(day_df['chamber'] == chamber) &
                              (day_df['pot_label'] == pot)][heatmap_metric].dropna()
                 if not sub.empty:
                     v = sub.iloc[-1]
-                    grid[r][c] = v
-                    text[r][c] = f"<b>{pot}</b><br>{v:.2f}"
+                    if is_dead:
+                        grid[r][c] = np.nan
+                        text[r][c] = f"<b>{pot}</b><br>DEAD"
+                    else:
+                        # Trend arrow vs previous day
+                        trend = ""
+                        if not prev_day_df.empty:
+                            prev_sub = prev_day_df[
+                                (prev_day_df['chamber'] == chamber) &
+                                (prev_day_df['pot_label'] == pot)
+                            ][heatmap_metric].dropna()
+                            if not prev_sub.empty:
+                                prev_val  = float(prev_sub.iloc[-1])
+                                delta     = v - prev_val
+                                threshold = max(abs(prev_val) * 0.05, 0.001)
+                                trend = " ↑" if delta > threshold else (" ↓" if delta < -threshold else " →")
+                        bolt_str = " ⚡" if is_bolt else ""
+                        grid[r][c] = v
+                        text[r][c] = f"<b>{pot}</b>{bolt_str}<br>{v:.2f}{trend}"
                 else:
                     text[r][c] = f"<b>{pot}</b><br>—"
             else:
@@ -674,10 +775,18 @@ elif page == "Per-Pot Dashboard":
             hcol.markdown(f"**{chamber.capitalize()}**")
             hcol.info(f"No data for **{pot_metric_opts[heatmap_metric]}** on {sel_date}.")
         else:
+            # Data-range normalised: min → lightest, max → darkest (maximises contrast)
+            live_vals = grid[~np.isnan(grid)]
+            zmin_plot = float(live_vals.min()) if len(live_vals) > 0 else 0.0
+            zmax_plot = float(live_vals.max()) if len(live_vals) > 0 else 1.0
+            if zmax_plot <= zmin_plot:
+                zmax_plot = zmin_plot + 0.001
+
             fig = go.Figure(go.Heatmap(
                 z=grid, text=text, texttemplate="%{text}",
                 textfont=dict(size=11, color="white"),
                 colorscale="YlGn", showscale=True,
+                zmin=zmin_plot, zmax=zmax_plot,
                 colorbar=dict(
                     title=dict(text=pot_metric_opts[heatmap_metric], font=dict(color="#c8e6c9")),
                     tickfont=dict(color="#c8e6c9"),
@@ -723,6 +832,18 @@ elif page == "Per-Pot Dashboard":
             if col_key in pot_df.columns:
                 val = latest.get(col_key)
                 card_cols[i].metric(label, fmt.format(val) if pd.notna(val) else "—")
+
+        if 'developmental_stage' in pot_df.columns:
+            stage_val = latest.get('developmental_stage')
+            bbch_val  = latest.get('developmental_stage_bbch')
+            conf_val  = latest.get('developmental_stage_conf')
+            if pd.notna(stage_val) and str(stage_val) not in ('', 'nan'):
+                sc1, sc2, sc3, _ = st.columns([1, 1, 1, 3])
+                sc1.metric("Stage", str(stage_val).capitalize())
+                bbch_str = str(int(float(bbch_val))) if pd.notna(bbch_val) and str(bbch_val) not in ('', 'nan') else "—"
+                sc2.metric("BBCH", bbch_str)
+                conf_str = f"{float(conf_val)*100:.0f}%" if pd.notna(conf_val) and str(conf_val) not in ('', 'nan') else "—"
+                sc3.metric("Confidence", conf_str)
 
         # Multi-metric trend chart for this pot
         trend_metrics_sel = st.multiselect(
@@ -771,7 +892,96 @@ elif page == "Per-Pot Dashboard":
                 use_container_width=True,
             )
 
-    # ── Section 3: Compare all pots — one metric, all pots as lines ──────────
+    # ── Section 3: Developmental Stage Timeline ──────────────────────────────
+    st.markdown("<div class='section-title'>Developmental Stage Timeline</div>", unsafe_allow_html=True)
+
+    if 'developmental_stage' in df.columns:
+        stage_ch_col, _ = st.columns([1, 2])
+        with stage_ch_col:
+            stage_chamber = st.selectbox("Chamber", pot_chambers_sel, key="stage_chamber")
+
+        stage_df = df[
+            (df['chamber'] == stage_chamber) &
+            df['developmental_stage'].notna() &
+            (df['developmental_stage'].astype(str) != '') &
+            (df['developmental_stage'].astype(str) != 'nan')
+        ].copy()
+
+        if stage_df.empty:
+            st.info("No developmental stage data yet — run the updated pipeline on a new image.")
+        else:
+            STAGE_COLORS = {
+                'dormant':        '#555555',
+                'germination':    '#C5E1A5',
+                'seedling':       '#81C784',
+                'vegetative':     '#2E7D32',
+                'tillering':      '#1B5E20',
+                'stem_extension': '#FFD54F',
+                'bolting':        '#FFD700',
+                'heading':        '#FFB300',
+                'flowering':      '#FF6F00',
+                'reproductive':   '#FF6F00',
+                'pod_fill':       '#E65100',
+                'grain_fill':     '#D84315',
+                'senescence':     '#BF360C',
+                'maturity':       '#795548',
+                'unknown':        '#424242',
+            }
+
+            # Current stage summary chips
+            latest_stage = (
+                stage_df.sort_values('timestamp')
+                .groupby('pot_label', as_index=False)
+                .last()[['pot_label', 'developmental_stage', 'developmental_stage_bbch', 'developmental_stage_conf']]
+            )
+            stage_chip_cols = st.columns(min(len(latest_stage), 8))
+            for scol, (_, row) in zip(stage_chip_cols, latest_stage.iterrows()):
+                stage   = str(row['developmental_stage']).capitalize()
+                bbch_v  = row.get('developmental_stage_bbch', '')
+                conf_v  = row.get('developmental_stage_conf', '')
+                bbch_s  = f"BBCH {int(float(bbch_v))}" if pd.notna(bbch_v) and str(bbch_v) not in ('', 'nan') else ''
+                conf_s  = f"{float(conf_v)*100:.0f}%" if pd.notna(conf_v) and str(conf_v) not in ('', 'nan') else ''
+                delta_s = f"{bbch_s}  {conf_s}".strip() or None
+                scol.metric(row['pot_label'], stage, delta=delta_s)
+
+            # Timeline — one dot per day per pot, coloured by stage
+            fig_stage = px.scatter(
+                stage_df.sort_values('timestamp'),
+                x='timestamp',
+                y='pot_label',
+                color='developmental_stage',
+                color_discrete_map=STAGE_COLORS,
+                hover_data={
+                    'developmental_stage_bbch': True,
+                    'developmental_stage_conf': ':.2f',
+                    'timestamp': '|%d %b %Y',
+                },
+                labels={
+                    'timestamp':          'Date',
+                    'pot_label':          'Pot',
+                    'developmental_stage': 'Stage',
+                },
+                category_orders={
+                    'pot_label': sorted(stage_df['pot_label'].unique(), reverse=True),
+                },
+            )
+            fig_stage.update_traces(marker=dict(size=10, line=dict(width=0)))
+            fig_stage.update_layout(
+                template=PLOTLY_TEMPLATE,
+                paper_bgcolor=CHART_BG,
+                plot_bgcolor=CHART_BG,
+                height=max(280, len(stage_df['pot_label'].unique()) * 55 + 80),
+                margin=dict(l=60, r=20, t=30, b=50),
+                font=dict(color='#c8e6c9'),
+                xaxis=dict(gridcolor='#1e3a1e'),
+                yaxis=dict(gridcolor='#1e3a1e'),
+                legend=dict(bgcolor='rgba(0,0,0,0)', title='Stage'),
+            )
+            st.plotly_chart(fig_stage, use_container_width=True)
+    else:
+        st.info("Developmental stage tracking not yet in CSV data — run the updated pipeline first.")
+
+    # ── Section 4: Compare all pots — one metric, all pots as lines ──────────
     st.markdown("<div class='section-title'>Compare All Pots</div>", unsafe_allow_html=True)
 
     cmp_col1, cmp_col2 = st.columns([1, 1])
@@ -1513,11 +1723,13 @@ elif page == "Live View":
         return rgb, depth if depth.exists() else None, mtime
 
     # Controls
-    ctrl_l, ctrl_m, ctrl_r = st.columns([2, 2, 1])
+    ctrl_l, ctrl_m, ctrl_c, ctrl_r = st.columns([2, 2, 2, 1])
     with ctrl_l:
         show_depth = st.toggle("Show depth preview alongside RGB", value=False)
     with ctrl_m:
         show_mask = st.toggle("Show green mask overlay", value=False)
+    with ctrl_c:
+        show_calib = st.toggle("Show calibration circles", value=False)
     with ctrl_r:
         auto_refresh = st.toggle("Auto-refresh (30s)", value=False)
 
@@ -1568,6 +1780,22 @@ elif page == "Live View":
                     _blended = _cv2.addWeighted(_img, 0.4, _overlay, 0.6, 0)
                     _blended_rgb = _cv2.cvtColor(_blended, _cv2.COLOR_BGR2RGB)
                     panels.append(("Mask", _blended_rgb, "Green mask overlay"))
+
+            if show_calib:
+                import cv2 as _cv2
+                import json as _json
+                _cimg = _cv2.imread(str(rgb_path))
+                _cpath = CALIB_DIR / f"{chamber}_calibration.json"
+                if _cimg is not None and _cpath.exists():
+                    with open(_cpath) as _cf:
+                        _calib = _json.load(_cf)
+                    for _pot in _calib.get('pots', []):
+                        _cv2.circle(_cimg, (_pot['x'], _pot['y']), _pot['r'], (0, 255, 0), 3)
+                        _cv2.circle(_cimg, (_pot['x'], _pot['y']), int(_pot['r'] * 0.55), (0, 165, 255), 2)
+                        _cv2.putText(_cimg, _pot['label'], (_pot['x'] - 40, _pot['y'] - _pot['r'] - 10),
+                                     _cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    _cimg_rgb = _cv2.cvtColor(_cimg, _cv2.COLOR_BGR2RGB)
+                    panels.append(("Calibration", _cimg_rgb, "Calibration circles (green=pot boundary, orange=centre zone)"))
 
             img_cols = st.columns(len(panels))
             for (label, src, caption), col in zip(panels, img_cols):
@@ -1894,13 +2122,13 @@ elif page == "Metrics":
     st.markdown("""
     <div class='main-header'>
         <h1>Metrics Glossary</h1>
-        <p>Explanation of every metric calculated by the analysis pipeline</p>
+        <p>Explanation of every metric calculated by the analysis pipeline, with value interpretation</p>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
-    All metrics are calculated daily per chamber by `analyse_chamber.py` and written
-    to `results/metrics.csv` (whole chamber) and `results/pot_metrics.csv` (per pot).
+    All metrics are calculated daily per pot by `analyse_chamber.py` and written to
+    `results/pot_metrics.csv`. Expand each section to see how to read specific values.
     """)
 
     # ── Vegetation Indices ────────────────────────────────────────────────────
@@ -1909,9 +2137,9 @@ elif page == "Metrics":
     veg_data = {
         "Metric": [
             "canopy_cover_%",
-            "exg_mean / exg_std",
-            "vari_mean / vari_std",
-            "ngrdi_mean / ngrdi_std",
+            "exg_mean",
+            "vari_mean",
+            "ngrdi_mean",
         ],
         "Full Name": [
             "Canopy Cover",
@@ -1920,19 +2148,33 @@ elif page == "Metrics":
             "Normalised Green-Red Difference Index",
         ],
         "Formula": [
-            "Green pixels / total area × 100",
-            "2G − R − B  (normalised)",
+            "Green pixels / pot area × 100",
+            "2G − R − B  (normalised to 0–1)",
             "(G − R) / (G + R − B)",
             "(G − R) / (G + R)",
         ],
-        "What it tells you": [
-            "How much of the pot/chamber is covered by plant material. Primary growth indicator.",
-            "Overall greenness. Sensitive to biomass but affected by lighting changes.",
+        "What it measures": [
+            "Proportion of the pot covered by plant material. Primary growth indicator.",
+            "Overall pixel-level greenness. Sensitive to biomass but affected by lighting.",
             "Greenness normalised against blue channel — more robust to illumination variation than ExG.",
             "Best RGB predictor of stomatal conductance (R²≈0.42). Distinguishes healthy green tissue from yellowing.",
         ],
     }
     st.dataframe(pd.DataFrame(veg_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Value interpretation — Vegetation Indices"):
+        st.markdown("""
+| Metric | Low | Typical healthy | High |
+|---|---|---|---|
+| **Canopy Cover %** | < 2% — seedling, barely visible | 5–30% — active vegetative growth | > 40% — dense mature rosette |
+| **ExG** | < 0.05 — sparse or stressed | 0.10–0.25 — normal growing plant | > 0.30 — dense vigorous canopy |
+| **VARI** | < 0.05 — yellowing or sparse | 0.05–0.15 — healthy vegetative growth | > 0.15 — peak greenness |
+| **NGRDI** | < 0.05 — stressed, low photosynthetic capacity | 0.06–0.12 — typical healthy Arabidopsis | 0.12–0.20 — peak green, high conductance expected |
+
+**NGRDI note:** Values < 0 indicate the red channel dominates — the plant is yellowing or senescing.
+Values > 0.15 in this trial correspond to the most vigorous enriched plants before bolting.
+NGRDI is preferred over ExG for cross-day comparisons because dividing by (G+R) removes absolute brightness effects.
+        """)
 
     # ── Growth Metrics ────────────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Growth Metrics</div>", unsafe_allow_html=True)
@@ -1953,21 +2195,35 @@ elif page == "Metrics":
             "Leaf Area Index",
         ],
         "Formula / Method": [
-            "Bounding circle diameter of green mask (pixels)",
+            "Diameter of minimum enclosing circle around green mask (pixels)",
             "Total green pixel count",
             "ln(cover_today / cover_yesterday)",
-            "SAM2 instance segmentation (watershed fallback)",
-            "−ln(1 − canopy_fraction) / 0.5  (Beer-Lambert, k=0.5)",
+            "SAM2 instance segmentation (watershed fallback). MAE ≈ 3.94 leaves.",
+            "−ln(1 − canopy_fraction) / 0.5  (Beer-Lambert law, extinction k=0.5)",
         ],
-        "What it tells you": [
-            "Physical spread of the rosette across the image.",
-            "Raw size of the canopy in pixels.",
-            "Day-on-day proportional growth speed. Positive = growing, negative = shrinking.",
-            "Number of individual leaves detected. Useful for developmental stage tracking.",
-            "Modelled leaf area per unit ground area. Corrected with canopy height when depth data is available.",
+        "What it measures": [
+            "Physical lateral spread of the rosette. Grows steadily during vegetative phase; jumps sharply at bolting as the stalk extends.",
+            "Raw 2D size in pixels. Useful for within-day comparisons but not cross-camera.",
+            "Day-on-day proportional growth rate. Logarithmic — comparable across plant sizes.",
+            "Number of individual leaves. Useful for developmental stage: Arabidopsis typically bolts at 8–12 leaves.",
+            "Effective leaf area per unit ground area. Values > 1.0 indicate canopy overlap (stacked leaves).",
         ],
     }
     st.dataframe(pd.DataFrame(growth_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Value interpretation — Growth Metrics"):
+        st.markdown("""
+| Metric | Low | Typical | High / Notable |
+|---|---|---|---|
+| **RGR** | < 0 — shrinking (bolting, senescence, or noise) | 0.02–0.10 — steady vegetative growth | > 0.15 — rapid early exponential growth |
+| **Leaf Count** | 1–4 — seedling / cotyledon stage | 5–9 — rosette growth stage | ≥ 10–12 — approaching bolting |
+| **LAI** | < 0.2 — very sparse canopy | 0.5–1.5 — healthy rosette | > 2.0 — dense stacked canopy or bolting |
+| **Diameter (px)** | < 50px — very young | 100–200px — mid-stage rosette | > 250px — large rosette or bolting spread |
+
+**RGR note:** A negative RGR for one day is not necessarily alarming — it can reflect measurement noise or
+a briefly sub-optimal image. A consistently negative RGR over 3+ days indicates genuine decline.
+An RGR spike upward often precedes bolting as the stalk extends the bounding circle rapidly.
+        """)
 
     # ── Health Metrics ────────────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Health Metrics</div>", unsafe_allow_html=True)
@@ -1979,6 +2235,7 @@ elif page == "Metrics":
             "curl_score",
             "symmetry_score",
             "health_score",
+            "health_label",
         ],
         "Full Name": [
             "Chlorosis %",
@@ -1986,77 +2243,302 @@ elif page == "Metrics":
             "Leaf Curl Score",
             "Rosette Symmetry",
             "Composite Health Score",
+            "Health Label",
         ],
         "Method": [
-            "% of green pixels with yellowing hue (HSV H: 15–30°)",
-            "% of green pixels with brown/dead tissue (HSV H: 5–15°, low saturation)",
-            "Ratio of perimeter² to area — high values indicate curling or irregular edges",
-            "Comparison of left/right and top/bottom halves of the green mask",
-            "Weighted combination: 40% chlorosis, 30% necrosis, 15% curl, 15% symmetry — scaled 0–100",
+            "% of canopy pixels with yellowing hue (HSV H: 15–30°, low saturation)",
+            "% of canopy pixels with brown/dead tissue (HSV H: 5–15°, low sat.)",
+            "Mean contour solidity (convex hull area / actual area). Low solidity = more curling.",
+            "Pixel overlap between left/right and top/bottom halves of the rosette mask.",
+            "Weighted: Necrosis 25% + Chlorosis 20% + NGRDI 20% + Curl 15% + Symmetry 10% + Cover 10%",
+            "Categorical label derived from health_score thresholds.",
         ],
-        "What it tells you": [
-            "Early nutrient deficiency or stress. Yellowing before visible wilting.",
-            "Late-stage stress or disease. Brown/dead tissue.",
-            "Physical leaf deformation — heat, drought, or disease stress.",
-            "Whether the rosette is growing evenly. Asymmetry can indicate localised stress.",
-            "Single summary score. 100 = fully healthy, 0 = severe stress across all indicators.",
+        "What it measures": [
+            "Early reversible stress. Chlorophyll breakdown before visible wilting — first sign of nutrient deficiency.",
+            "Irreversible tissue death. Brown patches indicate late-stage stress, disease, or physical damage.",
+            "Physical leaf deformation — heat, drought, or mechanical stress causes edges to curl inward.",
+            "Whether the rosette is growing evenly in all directions. Asymmetry signals localised stress or light gradients.",
+            "Single composite summary. Higher = healthier across all indicators simultaneously.",
+            "healthy (≥80) / mild-stress (60–79) / moderate-stress (40–59) / severe-stress (<40)",
         ],
     }
     st.dataframe(pd.DataFrame(health_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Value interpretation — Health Metrics"):
+        st.markdown("""
+| Metric | Healthy | Mild concern | Serious concern |
+|---|---|---|---|
+| **Chlorosis %** | 0–3% — no visible yellowing | 3–10% — early stress, check nutrients | > 10% — significant chlorophyll loss |
+| **Necrosis %** | 0–1% — healthy (noise threshold) | 1–5% — early die-back, monitor | > 5% — significant tissue death |
+| **Curl score** | 0.80–1.0 — flat healthy leaves | 0.65–0.80 — mild curl | < 0.65 — significant deformation |
+| **Symmetry** | 0.80–1.0 — even rosette | 0.60–0.80 — slight asymmetry | < 0.60 — localised stress or damage |
+| **Health score** | 80–100 — healthy | 60–79 — mild-stress | < 60 — moderate to severe stress |
+
+**Weighting rationale:**
+Necrosis carries the highest weight (25%) because it is irreversible — dead tissue does not recover.
+Chlorosis is weighted second (20%) as an early-warning signal before permanent damage.
+NGRDI (20%) acts as an independent photosynthetic capacity check via a different sensing modality.
+Curl and symmetry are supporting indicators weighted lower as they are more variable.
+
+**Score of 100 requires:** 0% chlorosis, 0% necrosis, perfectly flat leaves (curl=1.0),
+perfect symmetry, NGRDI ≥ 0.20, and canopy cover ≥ 60%. In practice, healthy trial plants
+score 70–90 — the scale has headroom so plants can be clearly ranked relative to each other.
+        """)
+
+    # ── Colour / Greenness Metrics ────────────────────────────────────────────
+    st.markdown("<div class='section-title'>Colour & Greenness Metrics</div>", unsafe_allow_html=True)
+
+    colour_data = {
+        "Metric": [
+            "gcc",
+            "lab_a",
+            "lab_L",
+            "greenness_score",
+            "green_shade",
+            "mean_hue",
+            "mean_saturation",
+        ],
+        "Full Name": [
+            "Green Chromatic Coordinate",
+            "CIE L*a*b* — a* axis",
+            "CIE L*a*b* — L* luminance",
+            "Composite Greenness Score",
+            "Named Green Shade",
+            "Mean Hue (HSV)",
+            "Mean Saturation (HSV)",
+        ],
+        "Formula / Method": [
+            "G / (R + G + B)",
+            "CIE Lab conversion — a* axis offset by −128 from OpenCV output",
+            "CIE Lab L* channel (0–255 OpenCV scale)",
+            "0.50×a*_norm + 0.30×NGRDI_norm + 0.20×GCC_norm, scaled 0–100",
+            "Rule-based from L* and a*: deep-green / mid-green / light-green / yellow-green",
+            "OpenCV HSV hue (0–180) × 2 → degrees (0–360°)",
+            "HSV saturation channel (0–255)",
+        ],
+        "What it measures": [
+            "Fraction of reflected light in the green channel. Robust to brightness changes. Overhead cameras consistently give GCC > 0.40.",
+            "Direct green–red axis in perceptual colour space. More negative = greener. Most sensitive single metric for greenness.",
+            "Perceptual brightness of canopy pixels. Higher L* = lighter/paler tissue. Young seedlings have higher L* than mature dark leaves.",
+            "Composite metric combining a* (50%), NGRDI (30%), GCC (20%). Single number summarising how green the canopy is.",
+            "Human-readable category for quick interpretation: deep-green = mature dark leaves; yellow-green = stressed or very young.",
+            "Dominant colour angle of the canopy. Green leaves: ~90–150°. Yellowing shifts toward 40–70°.",
+            "Colour purity. High saturation = vivid green. Low saturation = pale, washed-out, or senescent tissue.",
+        ],
+    }
+    st.dataframe(pd.DataFrame(colour_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Value interpretation — Colour & Greenness Metrics"):
+        st.markdown("""
+| Metric | Less green / stressed | Typical healthy | Peak green |
+|---|---|---|---|
+| **GCC** | < 0.36 — sparse or stressed | 0.38–0.42 — healthy overhead canopy | > 0.44 — very dense green cover |
+| **a* (lab_a)** | −4 to 0 — yellowing / senescing | −8 to −12 — healthy vegetative | < −12 — intensely saturated green |
+| **L* (lab_L)** | > 115 — pale / young seedling | 94–110 — normal rosette | < 94 — dark mature leaf tissue |
+| **Greenness score** | < 40 — stressed or sparse | 50–70 — healthy growth | 70–85 — peak vegetative (enriched trial) |
+| **Hue (°)** | 40–70° — yellowing | 90–140° — healthy green | 100–120° — peak green |
+| **Saturation** | < 60 — pale / washed out | 80–150 — normal | > 150 — vivid, saturated green |
+
+**a* is the most sensitive single greenness indicator** because the CIE Lab colour space is perceptually
+uniform — a 1-unit change in a* looks the same regardless of whether the plant is light or dark.
+NGRDI measures the same green-vs-red contrast but in raw RGB space, making them correlated but
+not identical. When they diverge, it usually means a lighting change rather than a real plant change.
+
+**Greenness score calibration:** Bounds were derived from this trial's actual range:
+a* spans −16 (most green observed) to −4 (least green), NGRDI 0.03–0.20, GCC 0.34–0.44.
+A score of 100 would require a plant simultaneously at the extreme of all three axes — not
+realistically achievable. Typical enriched rosettes score 70–85; control 50–70.
+        """)
 
     # ── Depth / 3D Metrics ────────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Depth & 3D Metrics</div>", unsafe_allow_html=True)
 
     depth_data = {
         "Metric": [
-            "soil_baseline_mm",
             "canopy_height_mean_mm",
             "canopy_height_max_mm",
             "canopy_volume_cm3",
+            "soil_baseline_mm",
         ],
         "Full Name": [
-            "Soil Baseline Depth",
             "Mean Canopy Height",
             "Max Canopy Height",
             "Canopy Volume",
+            "Soil Baseline Depth",
         ],
         "Method": [
-            "Median depth of non-plant valid pixels from OAK-D Lite stereo depth map (16-bit PNG, mm)",
-            "Mean of (soil_baseline − plant_pixel_depth) for valid plant pixels",
-            "5th percentile of plant pixel heights (robust to stereo spikes)",
-            "Sum of per-pixel heights × pixel area (2.34 mm² at ~1m) ÷ 1000",
+            "Mean of (soil_baseline − plant_pixel_depth) for all valid plant pixels",
+            "95th percentile of per-pixel heights above soil (robust to stereo outliers)",
+            "Sum of per-pixel heights × pixel area (2.34 mm²/px at ~1 m) ÷ 1000",
+            "Median depth of non-plant pixels — camera-to-soil distance (~630 mm). Used as reference only.",
         ],
-        "What it tells you": [
-            "Reference surface. Used to calculate plant height relative to soil.",
-            "Average vertical extent of the canopy above soil. Increases as plants grow upward.",
-            "Tallest point of the canopy — indicates bolting stem height once plants flower.",
-            "3D estimate of plant biomass volume. More informative than 2D area alone.",
+        "What it measures": [
+            "Average vertical extent of the whole canopy above soil. Stays low during vegetative phase; rises at bolting.",
+            "Tallest point detected. A sudden spike here is Signal 4 of bolting detection (threshold: > 40 mm).",
+            "3D proxy for above-ground biomass. More informative than 2D area alone when canopy overlaps.",
+            "Camera-to-soil distance. Not a plant growth metric — used as the subtraction reference for height calculations.",
         ],
     }
     st.dataframe(pd.DataFrame(depth_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Value interpretation — Depth & 3D Metrics"):
+        st.markdown("""
+| Metric | Early stage | Vegetative rosette | Bolting |
+|---|---|---|---|
+| **Mean height (mm)** | < 3 mm — flat cotyledons | 3–15 mm — rosette leaves | > 20 mm — stalk emerging |
+| **Max height (mm)** | < 5 mm | 5–30 mm | > 40 mm — confirmed bolting stem |
+| **Volume (cm³)** | < 1 cm³ | 2–20 cm³ | > 30 cm³ — large 3D structure |
+
+**Depth reliability note:** Stereo depth from OAK-D Lite is unreliable for very small plants
+(canopy < 5% of pot area) due to insufficient stereo texture. Height values become meaningful
+from approximately week 2 of the trial. The 95th-percentile is used for max height to
+suppress the stereo noise spikes that would otherwise dominate the maximum.
+        """)
+
+    # ── Bolting Detection ─────────────────────────────────────────────────────
+    st.markdown("<div class='section-title'>Bolting Detection</div>", unsafe_allow_html=True)
+
+    bolt_data = {
+        "Signal": [
+            "DiamCover (S1)",
+            "Elongation (S2)",
+            "VARIdrop (S3)",
+            "DepthSpike (S4)",
+        ],
+        "Method": [
+            "Rosette diameter / canopy cover ratio rising consistently over 3+ days",
+            "Elongated central contour (aspect ratio > 2.5) at the rosette centroid",
+            "VARI dropping consistently over 3 consecutive days (drop > 0.03)",
+            "Max canopy height exceeds 40 mm above soil baseline",
+        ],
+        "Biological basis": [
+            "During vegetative growth, diameter and cover increase together. At bolting, the stalk extends diameter while cover may plateau — the ratio rises sharply.",
+            "The flower stalk is long and thin. From overhead it appears as a high-aspect-ratio ellipse at the rosette centre.",
+            "Stalk tissue is less green than rosette leaves. As the stalk grows, it dilutes the mean canopy VARI downward.",
+            "The bolting stem grows vertically and is the first structure to appear clearly in the depth map.",
+        ],
+        "bolting_flag": [
+            "1 if bolting confirmed, 0 otherwise",
+            "—", "—", "—",
+        ],
+    }
+    st.dataframe(pd.DataFrame(bolt_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Bolting detection logic"):
+        st.markdown("""
+**Trigger rule:** Bolting is confirmed when **≥ 2 signals** fire AND at least one of them is
+**VARIdrop (S3)** or **Elongation (S2)**.
+
+This means DiamCover + DepthSpike alone cannot trigger a bolting alert — those two signals
+fire too readily on noisy depth data and normal rosette expansion. Requiring S2 or S3 ensures
+the detection is anchored to either a visible structural change (stalk shape) or a sustained
+photometric change (greenness drop).
+
+Once bolting is flagged for a pot, `bolting_flag = 1` is carried forward to all subsequent
+days so the status is persistent.
+
+**Typical onset in this trial:**
+- Enriched chamber: bolting detected May 5–12
+- Control chamber: Pot 4 (May 12), Pot 7 (May 7)
+- Arabidopsis at ~420 ppm CO₂ typically bolts 4–6 weeks after germination under long-day conditions
+        """)
+
+    # ── Developmental Stage ───────────────────────────────────────────────────
+    st.markdown("<div class='section-title'>Developmental Stage</div>", unsafe_allow_html=True)
+
+    stage_data = {
+        "Metric": [
+            "developmental_stage",
+            "developmental_stage_bbch",
+            "developmental_stage_conf",
+        ],
+        "Full Name": [
+            "Developmental Stage Name",
+            "BBCH Growth Stage Code",
+            "Stage Confidence",
+        ],
+        "Method": [
+            "Rule-based detector reads bolting_flag, germination_flag, canopy_cover_% and CSV history",
+            "International BBCH scale code corresponding to the detected stage",
+            "Classifier confidence (0.0–1.0) — reflects signal strength and species calibration status",
+        ],
+        "Arabidopsis stages": [
+            "dormant (0) → germination (9) → seedling (13) → vegetative (19) → bolting (51) → reproductive (60) → senescence (90)",
+            "BBCH 0–90",
+            "Arabidopsis: 0.80–0.95 (calibrated). Barley/brassica: ≤ 0.60 (skeleton — not yet calibrated).",
+        ],
+    }
+    st.dataframe(pd.DataFrame(stage_data), use_container_width=True, hide_index=True)
+
+    with st.expander("Stage detection logic"):
+        st.markdown("""
+**Arabidopsis stage ladder** (fully calibrated on EE496 trial data):
+
+| Stage | BBCH | Trigger condition |
+|---|---|---|
+| dormant | 0 | canopy_cover < 0.5% and no germination flag |
+| germination | 9 | canopy_cover ≥ 0.5% OR germination_flag = 1 |
+| seedling | 13 | canopy_cover ≥ 1.0% |
+| vegetative | 19 | canopy_cover ≥ 5.0% |
+| bolting | 51 | bolting_flag = 1 for < 7 days |
+| reproductive | 60 | bolting_flag has been 1 for ≥ 7 cumulative days |
+| senescence | 90 | canopy cover has dropped > 30% from peak for ≥ 5 consecutive days |
+
+**Senescence check runs first** — a senescing plant that briefly shows a low cover day will
+not revert to an earlier vegetative stage. Once bolting is detected, the stage cannot revert
+to vegetative even on days when bolting_flag temporarily drops.
+
+**Confidence interpretation:**
+- 0.90–0.95: high confidence (multiple consistent signals)
+- 0.80: normal confidence (single cover threshold met)
+- 0.50–0.70: skeleton/unverified (barley and brassica detectors before Q4/Q1 calibration)
+
+**Barley and brassica:** Stage detectors are present but use placeholder thresholds.
+Confidence is capped at 0.60 to flag these as estimates. Full calibration requires
+real trial data — barley target Q4 2026, brassica target Q1 2027.
+        """)
 
     # ── Ground Truth Metrics ──────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Ground Truth (LI-600 & SPAD)</div>", unsafe_allow_html=True)
 
     gt_data = {
-        "Metric": ["gsw", "fs / fm_prime", "spad"],
+        "Metric": ["gsw", "phi_psii", "spad"],
         "Full Name": [
             "Stomatal Conductance",
-            "Chlorophyll Fluorescence (Fs / Fm')",
+            "PSII Operating Efficiency (ΦPSII)",
             "SPAD Chlorophyll Index",
         ],
-        "Instrument": ["LI-600 Porometer", "LI-600 Fluorometer module", "SPAD meter (separate)"],
-        "Units": ["mol H₂O m⁻² s⁻¹", "Relative units", "SPAD units (0–99)"],
-        "What it tells you": [
-            "How open the stomata are. CO₂-enriched plants typically show reduced gsw as they photosynthesize more efficiently with less gas exchange needed.",
-            "Fs = steady-state fluorescence, Fm' = maximum. Used to derive ΦPSII = (Fm'−Fs)/Fm' — operating efficiency of Photosystem II. Detects stress before visible symptoms.",
-            "Leaf chlorophyll content proxy via transmittance at 650 nm vs 940 nm. Correlates with NGRDI from the camera.",
+        "Instrument": ["LI-600 Porometer", "LI-600 Fluorometer module", "SPAD meter"],
+        "Units": ["mol H₂O m⁻² s⁻¹", "Dimensionless (0–1)", "SPAD units (0–99)"],
+        "What it measures": [
+            "How open the stomata are — the rate of water vapour leaving the leaf. CO₂-enriched plants typically show lower gsw because they can fix the same carbon with fewer stomatal openings.",
+            "ΦPSII = (Fm′ − Fs) / Fm′. Operating efficiency of Photosystem II under ambient light. 1.0 = maximum theoretical efficiency; typical healthy values 0.4–0.7. Drops sharply under stress before visible symptoms appear.",
+            "Leaf chlorophyll content estimated from transmittance at 650 nm vs 940 nm. Correlates with NGRDI (both sense chlorophyll). SPAD > 40 is typical for healthy Arabidopsis; < 20 indicates chlorosis.",
         ],
     }
     st.dataframe(pd.DataFrame(gt_data), use_container_width=True, hide_index=True)
 
+    with st.expander("Value interpretation — Ground Truth"):
+        st.markdown("""
+| Metric | Low / stressed | Typical healthy Arabidopsis | High |
+|---|---|---|---|
+| **gsw** | < 0.1 — stomata mostly closed (drought / CO₂ enrichment) | 0.1–0.4 — normal range | > 0.5 — very open stomata, high transpiration |
+| **ΦPSII** | < 0.3 — photoinhibition or stress | 0.4–0.7 — healthy | > 0.7 — optimal light conditions |
+| **SPAD** | < 20 — chlorotic / nutrient deficient | 30–50 — healthy | > 55 — very high chlorophyll (rare) |
+
+**Regression target:** NGRDI (R²≈0.42, Jakunskas et al. 2025) is the strongest RGB predictor of gsw.
+The project aims to predict gsw, ΦPSII, and SPAD from camera images alone using NGRDI, VARI, ExG,
+LAI, chlorosis_pct, and canopy height as features.
+
+**Why gsw matters:** Stomatal conductance controls the CO₂ intake / water loss tradeoff at the leaf
+surface. In a CO₂-enriched chamber, plants can achieve the same photosynthesis rate with fewer
+open stomata → lower gsw → improved water-use efficiency. This is the primary physiological
+effect we expect to see between the enriched and control chambers.
+        """)
+
     st.info(
-        "**Regression target:** NGRDI is the strongest RGB predictor of gsw (R²≈0.42, Jakunskas et al. 2025). "
-        "The machine learning model will use NGRDI, VARI, ExG, LAI, chlorosis_pct, and canopy height "
-        "to predict gsw, ΦPSII, and SPAD from images alone."
+        "**Pipeline summary:** Metrics flow from image → `analyse_chamber.py` → `pot_metrics.csv`. "
+        "Health and greenness scores are computed last, using the raw metrics as inputs. "
+        "Ground truth (gsw, ΦPSII, SPAD) is logged manually via `li600_log.py` and stored in "
+        "`ground_truth.csv` for regression against the camera-derived metrics."
     )
