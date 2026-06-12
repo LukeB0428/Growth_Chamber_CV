@@ -1,0 +1,90 @@
+{
+  "name": "barley",
+  "display_name": "Hordeum vulgare",
+  "notes": "v0.1 warm-start. Canopy cover thresholds from Marchetti et al. 2019 (PMC6804369, Front Plant Sci) and Chen et al. 2020 (PMC7296146, Plant Phenomics). HSV bounds are literature-approximate — extract exact values from Marchetti supplementary methods before trial start. Depth thresholds and timing windows require real-plant calibration Q4 2026. Treat first 2 weeks of barley trial as calibration window.",
+
+  "segmentation": {
+    "hsv_lower": [30, 40, 40],
+    "hsv_upper": [85, 255, 255],
+    "morph_kernel_size": 5,
+    "_hsv_source": "Approximate for controlled-indoor barley (Marchetti 2019 geometry). Refine from paper supplements."
+  },
+
+  "inflorescence": {
+    "h_min": 15,
+    "h_max": 140,
+    "s_min": 5,
+    "s_max": 45,
+    "v_min": 80,
+    "v_max": 255,
+    "central_zone_fraction": 0.35,
+    "min_component_area": 80
+  },
+
+  "greenness": {
+    "a_star_min": -14.0,
+    "a_star_max": -3.0,
+    "ngrdi_min": 0.04,
+    "ngrdi_max": 0.22,
+    "gcc_min": 0.35,
+    "gcc_max": 0.45,
+    "shade_rules": [
+      {"l_max": 92,  "a_max": -6.5, "label": "deep-green"},
+      {"l_max": 105, "a_max": -6.0, "label": "mid-green"},
+      {"l_max": 118, "a_max": null,  "label": "light-green"}
+    ],
+    "shade_default": "yellow-green"
+  },
+
+  "health_score": {
+    "chlorosis_max": 35.0,
+    "necrosis_max": 25.0,
+    "curl_max": 1.0,
+    "ngrdi_min": 0.05,
+    "ngrdi_max": 0.22,
+    "symmetry_min": 0.2,
+    "symmetry_max": 1.0,
+    "cover_min": 2.0,
+    "cover_max": 85.0,
+    "_cover_max_source": "Marchetti 2019: barley canopy plateaus at 80-85% during booting (BBCH 40-49)"
+  },
+
+  "bolting": {
+    "diameter_cover_ratio_threshold": 1.2,
+    "elongation_aspect_ratio": 3.5,
+    "vari_drop_threshold": 0.05,
+    "depth_height_threshold_mm": 60.0,
+    "min_days_for_trend": 7,
+    "smoothing_window": 3
+  },
+
+  "analysis": {
+    "min_canopy_pct": 8.0,
+    "min_leaf_count_pct": 15.0
+  },
+
+  "developmental_stage": {
+    "detector": "barley",
+    "stages": [
+      {"id": 0, "name": "dormant",        "bbch": 0,  "description": "Seed, no canopy"},
+      {"id": 1, "name": "germination",    "bbch": 9,  "description": "Coleoptile emergence"},
+      {"id": 2, "name": "seedling",       "bbch": 13, "description": "3-leaf stage"},
+      {"id": 3, "name": "tillering",      "bbch": 21, "description": "First tiller visible"},
+      {"id": 4, "name": "stem_extension", "bbch": 31, "description": "First node detectable"},
+      {"id": 5, "name": "heading",        "bbch": 51, "description": "Inflorescence emerging from sheath"},
+      {"id": 6, "name": "flowering",      "bbch": 61, "description": "Anthesis"},
+      {"id": 7, "name": "grain_fill",     "bbch": 71, "description": "Watery ripe"},
+      {"id": 8, "name": "maturity",       "bbch": 87, "description": "Hard dough stage"}
+    ],
+    "thresholds": {
+      "germination_cover_pct": 0.5,
+      "seedling_cover_pct": 2.0,
+      "tillering_cover_pct": 25.0,
+      "stem_extension_cover_pct": 60.0,
+      "heading_depth_height_mm": 60.0,
+      "senescence_cover_drop_pct": 40.0,
+      "senescence_min_days": 5,
+      "_cover_sources": "Marchetti 2019 Table: BBCH 00-09=0-2%, 10-19=2-25%, 20-29=25-60%, 30-39=60-80%, 40-49=80-85% plateau. stem_extension_cover_pct not yet wired in detector — add in Q4 2026 update."
+    }
+  }
+}

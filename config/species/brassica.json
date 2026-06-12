@@ -1,0 +1,99 @@
+{
+  "name": "brassica",
+  "display_name": "Brassica napus / rapa",
+  "notes": "v0.1 warm-start. Green mask and early-stage cover from KOMATSUNA dataset (Uchiyama et al. 2017, ICCVW — Brassica rapa, overhead RGB-D controlled environment). Yellow flower HSV from Zhao et al. 2021 (Front Plant Sci) canola UAV study + NDYI method. Depth thresholds and timing windows require real-plant calibration Q1 2027. Treat first 2 weeks of brassica trial as calibration window.",
+
+  "segmentation": {
+    "hsv_lower": [21, 40, 40],
+    "hsv_upper": [77, 255, 255],
+    "morph_kernel_size": 7,
+    "_hsv_source": "KOMATSUNA dataset (Uchiyama 2017, ICCVW): extracted from 150 multi-view images, 4.1M leaf pixels. Hue p2=21, p98=77 (mean=50.4). S/V lower bounds kept at 40 (standard floor). Script: scripts/extract_komatsuna_hsv.py. Depth/timing still requires real-plant calibration Q1 2027."
+  },
+
+  "inflorescence": {
+    "_note": "Pale-stem section below is inherited from arabidopsis — NOT correct for brassica. Brassica inflorescence = yellow flowers (high S). Wire flower subsection into inflorescence_mask.py before Q1 2027 trial.",
+    "h_min": 15,
+    "h_max": 145,
+    "s_min": 5,
+    "s_max": 50,
+    "v_min": 85,
+    "v_max": 255,
+    "central_zone_fraction": 0.50,
+    "min_component_area": 60,
+    "flower": {
+      "h_min": 20,
+      "h_max": 35,
+      "s_min": 100,
+      "s_max": 255,
+      "v_min": 80,
+      "v_max": 255,
+      "ndyi_threshold": 0.05,
+      "min_component_area": 50,
+      "_source": "Zhao et al. 2021 Front Plant Sci: NDYI=(G-B)/(G+B) threshold 0.05-0.20 for full flowering. HSV yellow band: H 40-60 deg standard = H 20-30 OpenCV, S>60%, V>60% (Saturation/Value in 0-255: 100+/80+)."
+    }
+  },
+
+  "greenness": {
+    "a_star_min": -15.0,
+    "a_star_max": -3.5,
+    "ngrdi_min": 0.03,
+    "ngrdi_max": 0.22,
+    "gcc_min": 0.33,
+    "gcc_max": 0.45,
+    "shade_rules": [
+      {"l_max": 95,  "a_max": -7.0, "label": "deep-green"},
+      {"l_max": 106, "a_max": -6.5, "label": "mid-green"},
+      {"l_max": 116, "a_max": null,  "label": "light-green"}
+    ],
+    "shade_default": "yellow-green"
+  },
+
+  "health_score": {
+    "chlorosis_max": 30.0,
+    "necrosis_max": 20.0,
+    "curl_max": 1.0,
+    "ngrdi_min": 0.04,
+    "ngrdi_max": 0.22,
+    "symmetry_min": 0.25,
+    "symmetry_max": 1.0,
+    "cover_min": 1.5,
+    "cover_max": 70.0
+  },
+
+  "bolting": {
+    "diameter_cover_ratio_threshold": 0.90,
+    "elongation_aspect_ratio": 2.8,
+    "vari_drop_threshold": 0.04,
+    "depth_height_threshold_mm": 45.0,
+    "min_days_for_trend": 5,
+    "smoothing_window": 3
+  },
+
+  "analysis": {
+    "min_canopy_pct": 10.0,
+    "min_leaf_count_pct": 18.0
+  },
+
+  "developmental_stage": {
+    "detector": "brassica",
+    "stages": [
+      {"id": 0, "name": "dormant",      "bbch": 0,  "description": "Seed, no canopy"},
+      {"id": 1, "name": "germination",  "bbch": 9,  "description": "Radicle emergence"},
+      {"id": 2, "name": "seedling",     "bbch": 13, "description": "Cotyledons unfolded"},
+      {"id": 3, "name": "vegetative",   "bbch": 19, "description": "Rosette expanding"},
+      {"id": 4, "name": "bolting",      "bbch": 51, "description": "Inflorescence visible"},
+      {"id": 5, "name": "flowering",    "bbch": 61, "description": "Yellow flowers detected"},
+      {"id": 6, "name": "pod_fill",     "bbch": 71, "description": "Siliques forming"},
+      {"id": 7, "name": "senescence",   "bbch": 90, "description": "Monocarpic senescence — whole-plant yellowing"}
+    ],
+    "thresholds": {
+      "germination_cover_pct": 0.5,
+      "seedling_cover_pct": 1.5,
+      "vegetative_cover_pct": 12.0,
+      "flowering_yellow_pixel_pct": 2.0,
+      "senescence_cover_drop_pct": 35.0,
+      "senescence_min_days": 5,
+      "_cover_sources": "KOMATSUNA dataset (Uchiyama 2017): B. rapa BBCH 10-19 canopy 1-30% over 10 days. Entry to vegetative at ~12% (midpoint of BBCH 10-19 range). Seedling entry at 1.5% = first visible leaf pair."
+    }
+  }
+}

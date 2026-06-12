@@ -1,0 +1,84 @@
+{
+  "name": "arabidopsis",
+  "display_name": "Arabidopsis thaliana",
+  "notes": "Calibrated on EE496 trial data, April-June 2026. Overhead OAK-D Lite, ~1m height, greenhouse natural light.",
+
+  "segmentation": {
+    "hsv_lower": [25, 50, 45],
+    "hsv_upper": [88, 200, 250],
+    "morph_kernel_size": 7
+  },
+
+  "inflorescence": {
+    "h_min": 20,
+    "h_max": 130,
+    "s_min": 5,
+    "s_max": 40,
+    "v_min": 90,
+    "v_max": 255,
+    "central_zone_fraction": 0.45,
+    "min_component_area": 50
+  },
+
+  "greenness": {
+    "a_star_min": -16.0,
+    "a_star_max": -4.0,
+    "ngrdi_min": 0.03,
+    "ngrdi_max": 0.20,
+    "gcc_min": 0.34,
+    "gcc_max": 0.44,
+    "shade_rules": [
+      {"l_max": 94,  "a_max": -7.0, "label": "deep-green"},
+      {"l_max": 104, "a_max": -6.5, "label": "mid-green"},
+      {"l_max": 115, "a_max": null,  "label": "light-green"}
+    ],
+    "shade_default": "yellow-green"
+  },
+
+  "health_score": {
+    "chlorosis_max": 30.0,
+    "necrosis_max": 20.0,
+    "curl_max": 1.0,
+    "ngrdi_min": 0.05,
+    "ngrdi_max": 0.20,
+    "symmetry_min": 0.3,
+    "symmetry_max": 1.0,
+    "cover_min": 1.0,
+    "cover_max": 60.0
+  },
+
+  "bolting": {
+    "diameter_cover_ratio_threshold": 0.85,
+    "elongation_aspect_ratio": 2.5,
+    "vari_drop_threshold": 0.03,
+    "depth_height_threshold_mm": 40.0,
+    "min_days_for_trend": 5,
+    "smoothing_window": 3
+  },
+
+  "analysis": {
+    "min_canopy_pct": 12.0,
+    "min_leaf_count_pct": 30.0
+  },
+
+  "developmental_stage": {
+    "detector": "arabidopsis",
+    "stages": [
+      {"id": 0, "name": "dormant",      "bbch": 0,  "description": "Seed, no canopy detected"},
+      {"id": 1, "name": "germination",  "bbch": 9,  "description": "First green pixels, canopy < 1%"},
+      {"id": 2, "name": "seedling",     "bbch": 13, "description": "Canopy 1-5%, cotyledons visible"},
+      {"id": 3, "name": "vegetative",   "bbch": 19, "description": "Rosette expanding, canopy > 5%"},
+      {"id": 4, "name": "bolting",      "bbch": 51, "description": "Inflorescence stem emerging"},
+      {"id": 5, "name": "reproductive", "bbch": 60, "description": "Bolting confirmed > 7 days"},
+      {"id": 6, "name": "senescence",   "bbch": 90, "description": "Sustained canopy decline from peak"}
+    ],
+    "thresholds": {
+      "germination_cover_pct": 0.5,
+      "seedling_cover_pct": 1.0,
+      "vegetative_cover_pct": 5.0,
+      "reproductive_days_after_bolt": 7,
+      "senescence_cover_drop_pct": 30.0,
+      "senescence_min_days": 5
+    }
+  }
+}
