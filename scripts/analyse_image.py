@@ -59,14 +59,28 @@ def get_previous_canopy_cover(chamber_id):
     return last_value
 
 
+_HSV_LOWER       = np.array([25, 40, 40])
+_HSV_UPPER       = np.array([90, 255, 255])
+_MORPH_KERNEL_SZ = 7
+
+
+def configure(cfg):
+    """Apply species config to this module's segmentation constants."""
+    global _HSV_LOWER, _HSV_UPPER, _MORPH_KERNEL_SZ
+    seg = cfg.get('segmentation', {})
+    if 'hsv_lower' in seg:
+        _HSV_LOWER = np.array(seg['hsv_lower'], dtype=np.uint8)
+    if 'hsv_upper' in seg:
+        _HSV_UPPER = np.array(seg['hsv_upper'], dtype=np.uint8)
+    _MORPH_KERNEL_SZ = seg.get('morph_kernel_size', _MORPH_KERNEL_SZ)
+
+
 def get_green_mask_hsv(image):
-    """Classical HSV thresholding (Stage 2). H:25-90, S/V min 40, kernel=7."""
-    hsv         = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([25, 40, 40])
-    upper_green = np.array([90, 255, 255])
-    green_mask  = cv2.inRange(hsv, lower_green, upper_green)
-    kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    green_mask  = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
+    """Classical HSV thresholding (Stage 2). Thresholds loaded from species config."""
+    hsv        = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    green_mask = cv2.inRange(hsv, _HSV_LOWER, _HSV_UPPER)
+    kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_MORPH_KERNEL_SZ, _MORPH_KERNEL_SZ))
+    green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
     return green_mask
 
 
@@ -95,20 +109,23 @@ def load_depth_map(image_path):
     return depth
 
 
-def compute_depth_metrics(green_mask, depth_map):
+def compute_depth_metrics(green_mask, depth_map, pot_mask=None):
     """
     Compute canopy height and volume from OAK-D Lite depth map (Stage 4).
 
     green_mask  : binary uint8 mask at RGB resolution (1920x1080)
     depth_map   : uint16 array at depth resolution (640x400), values in mm
                   Pixels with depth == 0 are invalid and excluded.
+    pot_mask    : optional uint8 mask at RGB resolution; when supplied, soil
+                  baseline is restricted to non-plant pixels within the pot circle,
+                  preventing the bench surface outside pots from skewing the estimate.
 
     Method:
       - Resize green_mask to depth resolution with INTER_NEAREST (preserves binary)
-      - Soil baseline = median depth of valid non-plant pixels
+      - Soil baseline = median depth of valid non-plant pixels (within pot if mask given)
       - Plant height  = soil_baseline - plant_depth  (smaller depth = closer = taller)
-      - Volume        = sum(pixel_heights) * pixel_area_mm2 / 1000 → cm³
-        Pixel area ≈ 2.34 mm² at ~1m (OAK-D Lite ~73° HFOV, 640 horizontal pixels)
+      - Volume        = sum(pixel_heights) * pixel_area_mm2 / 1000 -> cm3
+        Pixel area ~2.34 mm2 at ~1m (OAK-D Lite ~73 HFOV, 640 horizontal pixels)
 
     Returns dict with keys:
         soil_baseline_mm, canopy_height_mean_mm, canopy_height_max_mm, canopy_volume_cm3
@@ -116,11 +133,23 @@ def compute_depth_metrics(green_mask, depth_map):
     """
     PIXEL_AREA_MM2 = 2.34  # mm² per depth pixel at ~1m camera-to-canopy distance
 
-    mask_small = cv2.resize(green_mask, (640, 400), interpolation=cv2.INTER_NEAREST)
-    plant_mask      = mask_small > 0
-    valid_mask      = depth_map > 0
-    non_plant_valid = (~plant_mask) & valid_mask
-    plant_valid     = plant_mask & valid_mask
+    # Suppress stereo false-match artifacts on flat leaf texture.
+    # Isolated false-match pixels are spatially small; a 5×5 median kills them
+    # while preserving real structure (bolting stalk = connected region).
+    depth_f = cv2.medianBlur(depth_map.astype(np.float32), 5)
+    depth_f[depth_map == 0] = 0.0   # restore invalid pixels (0 = no stereo data)
+    depth_map = depth_f
+
+    mask_small  = cv2.resize(green_mask, (640, 400), interpolation=cv2.INTER_NEAREST)
+    plant_mask  = mask_small > 0
+    valid_mask  = depth_map > 0
+    plant_valid = plant_mask & valid_mask
+
+    if pot_mask is not None:
+        pot_mask_small  = cv2.resize(pot_mask, (640, 400), interpolation=cv2.INTER_NEAREST) > 0
+        non_plant_valid = pot_mask_small & (~plant_mask) & valid_mask
+    else:
+        non_plant_valid = (~plant_mask) & valid_mask
 
     if np.sum(non_plant_valid) < 100:
         print("  Warning: insufficient soil pixels for depth baseline estimate")
@@ -163,8 +192,8 @@ def compute_depth_metrics(green_mask, depth_map):
 
     # Smaller depth value = closer to camera = taller plant
     canopy_height_mean_mm = round(float(soil_baseline_mm - np.median(plant_above_soil)), 2)
-    # Use 5th percentile instead of min to avoid single-pixel stereo spikes
-    canopy_height_max_mm  = round(float(soil_baseline_mm - np.percentile(plant_above_soil, 5)), 2)
+    # Use 10th percentile instead of min to avoid single-pixel stereo spikes
+    canopy_height_max_mm  = round(float(soil_baseline_mm - np.percentile(plant_above_soil, 10)), 2)
     pixel_heights         = np.clip(soil_baseline_mm - plant_above_soil, 0, None)
     canopy_volume_cm3     = round(float(np.sum(pixel_heights) * PIXEL_AREA_MM2 / 1000), 2)
 

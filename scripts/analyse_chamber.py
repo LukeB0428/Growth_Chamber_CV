@@ -79,6 +79,7 @@ POT_FIELDNAMES = [
     # Stage 15 composite health score (2)
     'health_score', 'health_label',
     'plant_status',
+    'developmental_stage', 'developmental_stage_bbch', 'developmental_stage_conf',
     'image_file',
 ]
 
@@ -190,6 +191,61 @@ def get_previous_pot_cover(chamber_id, pot_label):
     return last_value
 
 
+# Columns smoothed before health score computation and their fallback values
+_HEALTH_INPUTS = {
+    'chlorosis_pct':  0.0,
+    'necrosis_pct':   0.0,
+    'curl_score':     0.5,
+    'symmetry_score': 0.5,
+    'ngrdi_mean':     0.0,
+    'canopy_cover_%': 0.0,
+}
+_HEALTH_SMOOTH_WINDOW = 3
+
+
+def get_smoothed_health_inputs(chamber_id, pot_label, current_values, window=_HEALTH_SMOOTH_WINDOW):
+    """
+    Apply a rolling median across the last `window` days of health inputs for a pot,
+    including today's values. Returns smoothed dict ready for compute_health_score().
+
+    Reads prior rows from pot_metrics.csv, appends today's current_values,
+    and takes the median across the window. Falls back to today's raw value
+    when fewer than `window` days of prior data exist.
+
+    Args:
+        current_values : dict with keys matching _HEALTH_INPUTS
+        window         : number of days to smooth over (default 3)
+
+    Returns:
+        dict with same keys as current_values, values replaced by smoothed medians
+    """
+    history = {k: [] for k in _HEALTH_INPUTS}
+
+    if os.path.isfile(POT_METRICS):
+        with open(POT_METRICS, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get('chamber') != chamber_id or row.get('pot_label') != pot_label:
+                    continue
+                for col, fallback in _HEALTH_INPUTS.items():
+                    try:
+                        val = row.get(col, '')
+                        history[col].append(float(val) if val != '' else fallback)
+                    except (ValueError, TypeError):
+                        history[col].append(fallback)
+
+    smoothed = {}
+    for col, fallback in _HEALTH_INPUTS.items():
+        prior     = history[col][-(window - 1):]   # up to last (window-1) historic values
+        today_val = current_values.get(col, fallback)
+        if today_val is None:
+            today_val = fallback
+        window_vals = prior + [float(today_val)]
+        smoothed[col] = float(np.median(window_vals))
+
+    return smoothed
+
+
 def write_pot_row(metrics, pot_label, chamber_id, method_label, image_path, override_date=None):
     """
     Append one per-pot metrics row to pot_metrics.csv.
@@ -290,8 +346,11 @@ def write_pot_row(metrics, pot_label, chamber_id, method_label, image_path, over
             # Stage 15 composite health score
             'health_score':    fmt(metrics.get('health_score')),
             'health_label':    fmt(metrics.get('health_label')),
-            'plant_status':    fmt(metrics.get('plant_status', 'healthy')),
-            'image_file':      os.path.basename(image_path),
+            'plant_status':             fmt(metrics.get('plant_status', 'healthy')),
+            'developmental_stage':      fmt(metrics.get('developmental_stage')),
+            'developmental_stage_bbch': fmt(metrics.get('developmental_stage_bbch')),
+            'developmental_stage_conf': fmt(metrics.get('developmental_stage_conf')),
+            'image_file':               os.path.basename(image_path),
         })
 
 
@@ -300,7 +359,7 @@ def write_pot_row(metrics, pot_label, chamber_id, method_label, image_path, over
 # ─────────────────────────────────────────────
 
 def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
-                run_health=True, run_leaf_count=True, run_bolting=True):
+                run_health=True, run_leaf_count=True, run_bolting=True, cfg=None):
     """
     Run the full metric pipeline on a single pot.
 
@@ -343,8 +402,42 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
     # Restrict to pot circle (guards against any green bleeding from zeroed edges)
     green_mask = cv2.bitwise_and(green_mask, pot_mask)
 
+    # ── 2b. Connectivity filter ────────────────────────────────────────────────
+    # Bolting stalks from adjacent pots appear as isolated peripheral blobs.
+    # Only keep connected components that overlap the inner 55% zone — genuine
+    # plant tissue is always rooted near the pot centre.
+    _centre = np.zeros(image.shape[:2], dtype=np.uint8)
+    cv2.circle(_centre, (pot['x'], pot['y']), int(pot['r'] * 0.55), 255, -1)
+    _n, _lmap = cv2.connectedComponents(green_mask)
+    _clean = np.zeros_like(green_mask)
+    _dropped = 0
+    for _lbl in range(1, _n):
+        _comp = ((_lmap == _lbl) * 255).astype(np.uint8)
+        if np.any(cv2.bitwise_and(_comp, _centre) > 0):
+            _clean = cv2.bitwise_or(_clean, _comp)
+        else:
+            _dropped += 1
+    if _dropped:
+        print(f"  [connectivity filter] {_dropped} isolated blob(s) discarded from {pot_label}")
+    green_mask = _clean
+
     # ── 3. Canopy cover as % of pot area ──────────────────────────────────────
     pot_area_px  = float(np.sum(pot_mask > 0))
+
+    # ── 2c. Inflorescence mask (bolt stem — pale pixels near rosette centre) ──
+    # The standard green mask misses pale bolt stem tissue (S < 40). Adding it
+    # prevents the apparent canopy drop seen after bolting onset.
+    try:
+        from inflorescence_mask import get_inflorescence_mask
+        inflo_mask = get_inflorescence_mask(pot_image, pot_mask, green_mask, pot)
+        inflo_px   = int(np.sum(inflo_mask > 0))
+        if inflo_px > 0:
+            inflo_pct = inflo_px / pot_area_px * 100 if pot_area_px > 0 else 0.0
+            print(f"  [inflorescence] +{inflo_pct:.2f}% canopy from bolt stem "
+                  f"({inflo_px}px recovered)")
+            green_mask = cv2.bitwise_or(green_mask, inflo_mask)
+    except Exception as e:
+        print(f"  [inflorescence] Warning: {e}")
     canopy_cover = (np.sum(green_mask > 0) / pot_area_px * 100) if pot_area_px > 0 else 0.0
     green_pixels = green_mask > 0
 
@@ -402,13 +495,12 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
         rgr = None
 
     # ── 7. Depth metrics ───────────────────────────────────────────────────────
-    # green_mask is already restricted to pot circle, so depth analysis is pot-scoped.
-    # Soil baseline is computed from non-plant pixels in the full depth frame
-    # (valid since the chamber floor is at a consistent depth across all pots).
+    # pot_mask passed so soil baseline uses only within-pot non-plant pixels,
+    # excluding the bench surface outside pots which sits ~70mm lower.
     canopy_height_mean_mm = canopy_height_max_mm = canopy_volume_cm3 = soil_baseline_mm = None
     if depth_map is not None:
         try:
-            dm                    = compute_depth_metrics(green_mask, depth_map)
+            dm                    = compute_depth_metrics(green_mask, depth_map, pot_mask=pot_mask)
             soil_baseline_mm      = dm['soil_baseline_mm']
             canopy_height_mean_mm = dm['canopy_height_mean_mm']
             canopy_height_max_mm  = dm['canopy_height_max_mm']
@@ -467,7 +559,26 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
         except Exception as e:
             print(f"    Warning: bolting detection failed for {pot_label} — {e}")
 
-    # ── 11. Greenness / colour metrics + composite health score (Stage 15) ─────
+    # ── 11. Developmental stage ───────────────────────────────────────────────
+    dev_stage_name = 'dormant'
+    dev_stage_bbch = 0
+    dev_stage_conf = 0.0
+    try:
+        from developmental_stage import detect_stage
+        _stage_inputs = {
+            'canopy_cover_%':        canopy_cover,
+            'bolting_flag':          bolting_flag,
+            'germination_flag':      germination_flag,
+            'canopy_height_max_mm':  canopy_height_max_mm,
+        }
+        _ds            = detect_stage(_stage_inputs, chamber_id, pot_label, POT_METRICS, cfg or {})
+        dev_stage_name = _ds.stage_name
+        dev_stage_bbch = _ds.bbch_code
+        dev_stage_conf = _ds.confidence
+    except Exception as e:
+        print(f"    Warning: developmental stage failed for {pot_label} — {e}")
+
+    # ── 12. Greenness / colour metrics + composite health score (Stage 15) ─────
     greenness_data = {
         'mean_hue': None, 'mean_saturation': None, 'mean_value': None,
         'mean_r': None, 'mean_g': None, 'mean_b': None,
@@ -483,13 +594,22 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
         print(f"    Warning: greenness metrics failed for {pot_label} — {e}")
     try:
         from health_score import compute_health_score
+        raw_inputs = {
+            'chlorosis_pct':  chlorosis_pct  if chlorosis_pct  is not None else 0.0,
+            'necrosis_pct':   necrosis_pct   if necrosis_pct   is not None else 0.0,
+            'curl_score':     curl_score     if curl_score     is not None else 0.5,
+            'symmetry_score': symmetry_score if symmetry_score is not None else 0.5,
+            'ngrdi_mean':     ngrdi_mean,
+            'canopy_cover_%': canopy_cover,
+        }
+        si = get_smoothed_health_inputs(chamber_id, pot_label, raw_inputs)
         hs = compute_health_score(
-            chlorosis_pct    = chlorosis_pct    if chlorosis_pct    is not None else 0.0,
-            necrosis_pct     = necrosis_pct     if necrosis_pct     is not None else 0.0,
-            curl_score       = curl_score       if curl_score       is not None else 0.5,
-            symmetry_score   = symmetry_score   if symmetry_score   is not None else 0.5,
-            ngrdi_mean       = ngrdi_mean,
-            canopy_cover_pct = canopy_cover,
+            chlorosis_pct    = si['chlorosis_pct'],
+            necrosis_pct     = si['necrosis_pct'],
+            curl_score       = si['curl_score'],
+            symmetry_score   = si['symmetry_score'],
+            ngrdi_mean       = si['ngrdi_mean'],
+            canopy_cover_pct = si['canopy_cover_%'],
         )
         health_score_val = hs['health_score']
         health_label_val = hs['health_label']
@@ -502,7 +622,8 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
     print(f"  [{method}] {pot_label} | Canopy: {canopy_cover:.2f}% | "
           f"NGRDI: {ngrdi_mean:.4f} | Diameter: {rosette_diameter_px:.1f}px | "
           f"Leaves: {leaf_count if leaf_count is not None else 'N/A'} | "
-          f"Bolting: {'YES' if bolting_flag else 'no'}{status_str}")
+          f"Bolting: {'YES' if bolting_flag else 'no'} | "
+          f"Stage: {dev_stage_name} (BBCH {dev_stage_bbch}){status_str}")
 
     return {
         'canopy_cover':          canopy_cover,
@@ -530,9 +651,12 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
         'canopy_volume_cm3':     canopy_volume_cm3,
         'soil_baseline_mm':      soil_baseline_mm,
         **greenness_data,
-        'health_score':          health_score_val,
-        'health_label':          health_label_val,
-        'plant_status':          plant_status,
+        'health_score':             health_score_val,
+        'health_label':             health_label_val,
+        'plant_status':             plant_status,
+        'developmental_stage':      dev_stage_name,
+        'developmental_stage_bbch': dev_stage_bbch,
+        'developmental_stage_conf': round(dev_stage_conf, 3),
     }
 
 
@@ -542,7 +666,8 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
 
 def analyse_chamber(image_path, chamber_id, method="hsv",
                     run_health=True, run_leaf_count=True, run_bolting=True,
-                    run_whole=False, skip_auto_calibrate=False, override_date=None):
+                    run_whole=False, skip_auto_calibrate=False, override_date=None,
+                    species="arabidopsis"):
     """
     Main orchestrator for a single chamber capture.
 
@@ -559,6 +684,8 @@ def analyse_chamber(image_path, chamber_id, method="hsv",
         run_whole  : if True, also run whole-chamber analysis → metrics.csv (default False)
     """
     from analyse_image import analyse_image, load_depth_map
+    from species_config import load_and_apply
+    cfg = load_and_apply(species)
 
     # ── 1. Whole-chamber analysis (optional) ─────────────────────────────────
     if run_whole:
@@ -580,12 +707,24 @@ def analyse_chamber(image_path, chamber_id, method="hsv",
         return
 
     # ── 3. Auto-calibrate (update pot positions from image) ──────────────────
-    if not skip_auto_calibrate:
+    # Skipped if the calibration JSON has locked=True (set by calibrate_pots.py)
+    _calib_path = os.path.join(CALIB_DIR, f"{chamber_id}_calibration.json")
+    _calib_locked = False
+    if os.path.isfile(_calib_path):
+        try:
+            import json as _json
+            _calib_locked = _json.load(open(_calib_path)).get("locked", False)
+        except Exception:
+            pass
+
+    if not skip_auto_calibrate and not _calib_locked:
         try:
             from auto_calibrate import auto_calibrate
             auto_calibrate(image, chamber_id, verbose=True)
         except Exception as e:
             print(f"  [auto_calibrate] Warning: {e} — using existing calibration")
+    elif _calib_locked:
+        print(f"  [auto_calibrate] Manual calibration locked — skipping Hough update")
 
     # ── 4. Load calibration ───────────────────────────────────────────────────
     calib = load_calibration(chamber_id)
@@ -601,7 +740,8 @@ def analyse_chamber(image_path, chamber_id, method="hsv",
         try:
             metrics = analyse_pot(
                 image, depth_map, pot, chamber_id, image_path,
-                method, run_health, run_leaf_count, run_bolting
+                method, run_health, run_leaf_count, run_bolting,
+                cfg=cfg,
             )
             write_pot_row(metrics, pot['label'], chamber_id, method, image_path, override_date)
         except Exception as e:
@@ -639,6 +779,8 @@ if __name__ == "__main__":
                         help="Also run whole-chamber analysis → metrics.csv (default: per-pot only)")
     parser.add_argument("--date",       default=None,
                         help="Override timestamp date (YYYY-MM-DD) — use when re-running past images")
+    parser.add_argument("--species",    default="arabidopsis",
+                        help="Species config name (must match a file in config/species/)")
     args = parser.parse_args()
 
     # Allow --csv override to propagate to analyse_image
@@ -656,4 +798,5 @@ if __name__ == "__main__":
         run_whole           = args.whole,
         skip_auto_calibrate = args.no_auto_calibrate,
         override_date       = args.date,
+        species             = args.species,
     )
