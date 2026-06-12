@@ -59,6 +59,22 @@ HEALTH_LABELS = [
 ]
 
 
+def configure(cfg):
+    """Apply species config to this module's normalisation bounds."""
+    global CHLOROSIS_MAX, NECROSIS_MAX, CURL_MAX
+    global NGRDI_MIN, NGRDI_MAX, SYMMETRY_MIN, SYMMETRY_MAX, COVER_MIN, COVER_MAX
+    hs = cfg.get('health_score', {})
+    CHLOROSIS_MAX = hs.get('chlorosis_max', CHLOROSIS_MAX)
+    NECROSIS_MAX  = hs.get('necrosis_max',  NECROSIS_MAX)
+    CURL_MAX      = hs.get('curl_max',      CURL_MAX)
+    NGRDI_MIN     = hs.get('ngrdi_min',     NGRDI_MIN)
+    NGRDI_MAX     = hs.get('ngrdi_max',     NGRDI_MAX)
+    SYMMETRY_MIN  = hs.get('symmetry_min',  SYMMETRY_MIN)
+    SYMMETRY_MAX  = hs.get('symmetry_max',  SYMMETRY_MAX)
+    COVER_MIN     = hs.get('cover_min',     COVER_MIN)
+    COVER_MAX     = hs.get('cover_max',     COVER_MAX)
+
+
 def _norm_inverted(value, max_val):
     """Normalise a stress metric (lower = healthier). Returns 0-1."""
     if value is None:

@@ -47,8 +47,11 @@ from config import METRICS_CSV, BOLTING_VIS_DIR
 RESULTS_PATH    = str(METRICS_CSV)
 BOLTING_VIS_DIR = str(BOLTING_VIS_DIR)
 
-# How many consecutive days of data needed before trend analysis is reliable
-MIN_DAYS_FOR_TREND = 3
+# Minimum days of data before trend analysis is reliable
+MIN_DAYS_FOR_TREND = 5
+
+# Rolling median window for smoothing daily metric noise before trend analysis
+SMOOTHING_WINDOW = 3
 
 # Bolting signal thresholds
 DIAMETER_COVER_RATIO_THRESHOLD = 0.85   # diameter(px) / (canopy_cover * image_area)
@@ -56,6 +59,50 @@ DIAMETER_COVER_RATIO_THRESHOLD = 0.85   # diameter(px) / (canopy_cover * image_a
 ELONGATION_ASPECT_RATIO        = 2.5     # central contour aspect ratio for stalk detection
 VARI_DROP_THRESHOLD            = 0.03    # VARI drop over 3 days indicating less green tissue
 DEPTH_HEIGHT_THRESHOLD_MM      = 40.0   # canopy_height_max_mm above soil baseline — bolt stem
+
+
+def configure(cfg):
+    """Apply species config to this module's bolting detection thresholds."""
+    global DIAMETER_COVER_RATIO_THRESHOLD, ELONGATION_ASPECT_RATIO
+    global VARI_DROP_THRESHOLD, DEPTH_HEIGHT_THRESHOLD_MM
+    global MIN_DAYS_FOR_TREND, SMOOTHING_WINDOW
+    b = cfg.get('bolting', {})
+    DIAMETER_COVER_RATIO_THRESHOLD = b.get('diameter_cover_ratio_threshold', DIAMETER_COVER_RATIO_THRESHOLD)
+    ELONGATION_ASPECT_RATIO        = b.get('elongation_aspect_ratio',        ELONGATION_ASPECT_RATIO)
+    VARI_DROP_THRESHOLD            = b.get('vari_drop_threshold',            VARI_DROP_THRESHOLD)
+    DEPTH_HEIGHT_THRESHOLD_MM      = b.get('depth_height_threshold_mm',      DEPTH_HEIGHT_THRESHOLD_MM)
+    MIN_DAYS_FOR_TREND             = b.get('min_days_for_trend',             MIN_DAYS_FOR_TREND)
+    SMOOTHING_WINDOW               = b.get('smoothing_window',               SMOOTHING_WINDOW)
+
+
+# ─────────────────────────────────────────────
+# SMOOTHING HELPER
+# ─────────────────────────────────────────────
+
+def _rolling_median(values, window=SMOOTHING_WINDOW):
+    """
+    Apply a rolling median to a list of floats.
+    Each output value is the median of up to `window` preceding values
+    (including itself). Reduces single-day noise without shifting trends.
+    """
+    smoothed = []
+    for i in range(len(values)):
+        start = max(0, i - window + 1)
+        smoothed.append(float(np.median(values[start:i + 1])))
+    return smoothed
+
+
+def _trend_slope(values):
+    """
+    Returns the linear regression slope of a sequence of values.
+    Positive = rising, negative = falling. More robust than strict monotonic check.
+    """
+    x = np.arange(len(values), dtype=float)
+    y = np.array(values, dtype=float)
+    if len(x) < 2:
+        return 0.0
+    slope = np.polyfit(x, y, 1)[0]
+    return float(slope)
 
 
 # ─────────────────────────────────────────────
@@ -96,17 +143,17 @@ def check_diameter_cover_trend(chamber_id, csv_path=RESULTS_PATH):
     if len(rows) < MIN_DAYS_FOR_TREND:
         return False, f"Only {len(rows)} data points — need {MIN_DAYS_FOR_TREND} for trend"
 
-    # Compute diameter/cover ratio for last MIN_DAYS_FOR_TREND entries
     recent = rows[-MIN_DAYS_FOR_TREND:]
-    ratios = [r['diameter'] / r['canopy_cover'] for r in recent]
+    raw_ratios      = [r['diameter'] / r['canopy_cover'] for r in recent]
+    smoothed_ratios = _rolling_median(raw_ratios)
 
-    # Check if ratio is consistently rising
-    is_rising = all(ratios[i] < ratios[i+1] for i in range(len(ratios)-1))
-    latest    = ratios[-1]
+    slope  = _trend_slope(smoothed_ratios)
+    latest = smoothed_ratios[-1]
 
-    if is_rising and latest > DIAMETER_COVER_RATIO_THRESHOLD:
-        return True, f"Diameter/cover ratio rising: {ratios} (latest: {latest:.2f})"
-    return False, f"Diameter/cover ratio stable: {latest:.2f}"
+    if slope > 0 and latest > DIAMETER_COVER_RATIO_THRESHOLD:
+        return True, (f"Diameter/cover ratio rising (slope={slope:.3f}, "
+                      f"smoothed={[round(v,2) for v in smoothed_ratios]})")
+    return False, f"Diameter/cover ratio stable: {latest:.2f} (slope={slope:.3f})"
 
 
 # ─────────────────────────────────────────────
@@ -215,14 +262,16 @@ def check_vari_trend(chamber_id, csv_path=RESULTS_PATH):
     if len(vari_values) < MIN_DAYS_FOR_TREND:
         return False, f"Only {len(vari_values)} VARI values — need {MIN_DAYS_FOR_TREND}"
 
-    recent = vari_values[-MIN_DAYS_FOR_TREND:]
-    drop   = recent[0] - recent[-1]
+    recent          = vari_values[-MIN_DAYS_FOR_TREND:]
+    smoothed_vari   = _rolling_median(recent)
+    slope           = _trend_slope(smoothed_vari)
+    drop            = smoothed_vari[0] - smoothed_vari[-1]
 
-    is_dropping = all(recent[i] > recent[i+1] for i in range(len(recent)-1))
-
-    if is_dropping and drop > VARI_DROP_THRESHOLD:
-        return True, f"VARI dropping consistently: {[round(v,4) for v in recent]} (drop: {drop:.4f})"
-    return False, f"VARI stable (recent: {[round(v,4) for v in recent]})"
+    if slope < 0 and drop > VARI_DROP_THRESHOLD:
+        return True, (f"VARI dropping (slope={slope:.4f}, drop={drop:.4f}, "
+                      f"smoothed={[round(v,4) for v in smoothed_vari]})")
+    return False, (f"VARI stable (slope={slope:.4f}, "
+                   f"smoothed={[round(v,4) for v in smoothed_vari]})")
 
 
 # ─────────────────────────────────────────────
@@ -317,12 +366,15 @@ def check_bolting(image, green_mask, chamber_id, csv_path=RESULTS_PATH,
 
     n_signals = len(signals_fired)
 
-    print(f"  Bolting signals: DiamCover={'✓' if s1 else '✗'} | "
-          f"Elongation={'✓' if s2 else '✗'} | "
-          f"VARIdrop={'✓' if s3 else '✗'} | "
-          f"DepthSpike={'✓' if s4 else '✗'}  ({n_signals}/4 fired)")
+    print(f"  Bolting signals: DiamCover={'Y' if s1 else 'N'} | "
+          f"Elongation={'Y' if s2 else 'N'} | "
+          f"VARIdrop={'Y' if s3 else 'N'} | "
+          f"DepthSpike={'Y' if s4 else 'N'}  ({n_signals}/4 fired)")
 
-    if n_signals >= 2:
+    # Require VARIdrop (sustained greenness decline) or Elongation (stalk structure)
+    # as one of the firing signals. DiamCover + DepthSpike alone fires too readily
+    # on noisy depth data in plants that haven't developed a visible stalk.
+    if n_signals >= 2 and (s2 or s3):
         today = datetime.now().strftime("%Y-%m-%d")
         print(f"  *** BOLTING DETECTED — {chamber_id} — {today} ***")
         save_bolting_visualisation(image, green_mask, signals_fired, chamber_id)

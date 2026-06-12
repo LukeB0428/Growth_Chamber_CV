@@ -53,13 +53,30 @@ SHADE_RULES = [
 ]
 SHADE_DEFAULT = "yellow-green"    # stressed, etiolated, or very young
 
-# Greenness score normalisation bounds (from empirical data + headroom)
-A_STAR_MIN  = -10.0   # most green expected value of a*
-A_STAR_MAX  =  -4.0   # least green expected value of a*
-NGRDI_MIN   =  0.08
-NGRDI_MAX   =  0.16
+# Greenness score normalisation bounds (recalibrated on actual trial data, May 2026)
+# Overhead growth chamber imagery differs from field: GCC > 0.40, a* < -10 are common.
+A_STAR_MIN  = -16.0   # most green — actual range in trial: -15 to -7
+A_STAR_MAX  =  -4.0   # least green
+NGRDI_MIN   =  0.03   # actual minimum observed in trial
+NGRDI_MAX   =  0.20   # actual maximum observed
 GCC_MIN     =  0.34
-GCC_MAX     =  0.38
+GCC_MAX     =  0.44   # overhead camera GCC consistently > 0.40
+
+
+def configure(cfg):
+    """Apply species config to this module's greenness normalisation bounds."""
+    global A_STAR_MIN, A_STAR_MAX, NGRDI_MIN, NGRDI_MAX, GCC_MIN, GCC_MAX
+    global SHADE_RULES, SHADE_DEFAULT
+    g = cfg.get('greenness', {})
+    A_STAR_MIN    = g.get('a_star_min',    A_STAR_MIN)
+    A_STAR_MAX    = g.get('a_star_max',    A_STAR_MAX)
+    NGRDI_MIN     = g.get('ngrdi_min',     NGRDI_MIN)
+    NGRDI_MAX     = g.get('ngrdi_max',     NGRDI_MAX)
+    GCC_MIN       = g.get('gcc_min',       GCC_MIN)
+    GCC_MAX       = g.get('gcc_max',       GCC_MAX)
+    SHADE_DEFAULT = g.get('shade_default', SHADE_DEFAULT)
+    if 'shade_rules' in g:
+        SHADE_RULES = [(r['l_max'], r['a_max'], r['label']) for r in g['shade_rules']]
 
 
 def compute_greenness_metrics(green_mask, bgr_image):
