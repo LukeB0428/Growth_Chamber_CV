@@ -71,78 +71,124 @@ def _green_fraction(image, mask_bool):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SAM2 approach
+# SAM2 approach — point-prompted
 # ─────────────────────────────────────────────────────────────────────────────
+def _find_leaf_prompts(green_mask):
+    """
+    Find one foreground point per leaf using distance-transform local maxima.
+    The peak of the distance transform inside each blob is the most interior
+    point — an ideal SAM2 prompt for that leaf.
+    Returns list of (x, y) pixel coordinates.
+    """
+    from scipy.ndimage import maximum_filter
+    import scipy.ndimage as ndi
+
+    binary = (green_mask > 0).astype(np.uint8)
+    if binary.sum() == 0:
+        return []
+
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    if dist.max() == 0:
+        return []
+
+    # Neighbourhood size scales with typical leaf radius
+    neigh  = max(15, int(dist.max() * 0.5))
+    loc_max = maximum_filter(dist, size=neigh)
+    peaks   = (dist == loc_max) & (dist > 0.25 * dist.max())
+
+    labeled, n = ndi.label(peaks)
+    if n == 0:
+        return []
+
+    points = []
+    for cy, cx in ndi.center_of_mass(peaks, labeled, range(1, n + 1)):
+        ix, iy = int(round(cx)), int(round(cy))
+        if 0 <= iy < green_mask.shape[0] and 0 <= ix < green_mask.shape[1]:
+            if green_mask[iy, ix] > 0:
+                points.append((ix, iy))
+    return points
+
+
 def _try_sam2(image, green_mask):
     """
-    Attempt SAM2 zero-shot leaf instance segmentation.
-    Returns (leaf_masks_list, method_label) or raises an exception.
-
-    leaf_masks_list: list of boolean 2D arrays, one per detected leaf.
+    SAM2 point-prompted leaf segmentation.
+    One foreground point prompt per leaf centre (distance-transform peak)
+    is passed to SAM2ImagePredictor. This is more accurate than automatic
+    grid sampling for dense, overlapping rosette leaves.
     """
     try:
         from sam2.build_sam import build_sam2
-        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
         import torch
     except ImportError:
         raise ImportError("SAM2 not installed")
 
-    os.makedirs(SAM2_WEIGHTS, exist_ok=True)
+    prompts = _find_leaf_prompts(green_mask)
+    if not prompts:
+        raise ValueError("No leaf prompts found in green mask")
 
-    # Use tiny model for CPU — fastest inference
+    os.makedirs(SAM2_WEIGHTS, exist_ok=True)
     cfg        = "configs/sam2.1/sam2.1_hiera_t.yaml"
     checkpoint = os.path.join(SAM2_WEIGHTS, "sam2.1_hiera_tiny.pt")
 
-    # Auto-download checkpoint if missing
     if not os.path.isfile(checkpoint):
         print("Downloading SAM2 tiny checkpoint (~150 MB)...")
         import urllib.request
-        url = ("https://dl.fbaipublicfiles.com/segment_anything_2/"
-               "092824/sam2.1_hiera_tiny.pt")
-        urllib.request.urlretrieve(url, checkpoint)
+        urllib.request.urlretrieve(
+            "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt",
+            checkpoint)
         print("Download complete.")
 
-    device = "cpu"
-    sam2   = build_sam2(cfg, checkpoint, device=device)
+    device    = "cpu"
+    sam2      = build_sam2(cfg, checkpoint, device=device)
+    predictor = SAM2ImagePredictor(sam2)
 
-    generator = SAM2AutomaticMaskGenerator(
-        model              = sam2,
-        points_per_side    = 32,       # lower = faster on CPU
-        pred_iou_thresh    = 0.80,
-        stability_score_thresh = 0.90,
-        min_mask_region_area   = MIN_LEAF_AREA_PX,
-    )
-
-    # SAM2 expects RGB
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    masks     = generator.generate(image_rgb)
+    predictor.set_image(image_rgb)
 
-    h, w        = image.shape[:2]
-    total_px    = h * w
-    leaf_masks  = []
+    h, w       = image.shape[:2]
+    total_px   = h * w
+    leaf_masks = []
 
-    for m in masks:
-        seg = m["segmentation"]  # boolean H×W array
+    print(f"  SAM2 prompted: {len(prompts)} candidate leaf points")
 
-        # Skip if too small or too large
-        area = np.sum(seg)
-        if area < MIN_LEAF_AREA_PX:
-            continue
-        if area / total_px > MAX_LEAF_AREA_FRAC:
-            continue
+    with torch.inference_mode():
+        for (px, py) in prompts:
+            try:
+                masks, scores, _ = predictor.predict(
+                    point_coords     = np.array([[px, py]], dtype=np.float32),
+                    point_labels     = np.array([1],        dtype=np.int32),
+                    multimask_output = True,
+                )
+                # Convert to numpy if torch tensors returned
+                if hasattr(masks, 'numpy'):
+                    masks  = masks.numpy()
+                if hasattr(scores, 'numpy'):
+                    scores = scores.numpy()
 
-        # Skip if not green enough
-        if _green_fraction(image, seg) < MIN_GREEN_FRAC:
-            continue
+                best = masks[int(np.argmax(scores))].astype(bool)
+                area = int(np.sum(best))
 
-        # Skip if mask is mostly outside the canopy region
-        overlap = np.sum(seg & (green_mask > 0))
-        if overlap / area < 0.30:
-            continue
+                if area < MIN_LEAF_AREA_PX:
+                    continue
+                if area / total_px > MAX_LEAF_AREA_FRAC:
+                    continue
+                if _green_fraction(image, best) < MIN_GREEN_FRAC:
+                    continue
+                # Skip if mask is mostly outside the valid canopy region
+                if np.sum(best & (green_mask > 0)) / area < 0.30:
+                    continue
+                # Deduplicate: skip if >50% of this mask overlaps an existing leaf
+                if any(np.sum(best & ex) / area > 0.5 for ex in leaf_masks):
+                    continue
 
-        leaf_masks.append(seg)
+                leaf_masks.append(best)
 
-    return leaf_masks, "sam2"
+            except Exception as e:
+                print(f"  SAM2 predict error at ({px},{py}): {e}")
+                continue
+
+    return leaf_masks, "sam2-prompted"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
