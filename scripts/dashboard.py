@@ -1723,11 +1723,9 @@ elif page == "Live View":
         return rgb, depth if depth.exists() else None, mtime
 
     # Controls
-    ctrl_l, ctrl_m, ctrl_c, ctrl_r = st.columns([2, 2, 2, 1])
+    ctrl_l, ctrl_c, ctrl_r = st.columns([2, 2, 1])
     with ctrl_l:
         show_depth = st.toggle("Show depth preview alongside RGB", value=False)
-    with ctrl_m:
-        show_mask = st.toggle("Show green mask overlay", value=False)
     with ctrl_c:
         show_calib = st.toggle("Show calibration circles", value=False)
     with ctrl_r:
@@ -1768,19 +1766,6 @@ elif page == "Live View":
                     panels.append(("Depth", str(depth_path), "Depth preview (closer = brighter)"))
                 else:
                     panels.append(("Depth", None, "No depth preview available"))
-            if show_mask:
-                import cv2 as _cv2
-                import numpy as _np
-                _img = _cv2.imread(str(rgb_path))
-                if _img is not None:
-                    _hsv  = _cv2.cvtColor(_img, _cv2.COLOR_BGR2HSV)
-                    _mask = _cv2.inRange(_hsv, _np.array([25, 40, 40]), _np.array([90, 255, 255]))
-                    _overlay = _img.copy()
-                    _overlay[_mask > 0] = [0, 220, 0]
-                    _blended = _cv2.addWeighted(_img, 0.4, _overlay, 0.6, 0)
-                    _blended_rgb = _cv2.cvtColor(_blended, _cv2.COLOR_BGR2RGB)
-                    panels.append(("Mask", _blended_rgb, "Green mask overlay"))
-
             if show_calib:
                 import cv2 as _cv2
                 import json as _json
