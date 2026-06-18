@@ -31,6 +31,8 @@ brassica_pods/data/dataset/*
 brassica_pods/weights/*
 brassica_pods/colab/*.zip
 brassica_pods/data/eval_ground_truth.csv
+brassica_pods/data/eval/
+brassica_pods/data/eval_handcount/
 !**/.gitkeep
 
 # ── Python cache ──────────────────────────────────────────────────────────────
