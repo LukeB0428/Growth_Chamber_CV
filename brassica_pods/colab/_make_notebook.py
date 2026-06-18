@@ -229,7 +229,7 @@ from ultralytics import YOLO
 model = YOLO(MODEL)
 results = model.train(data="pods.yaml", epochs=EPOCHS, imgsz=IMGSZ, batch=BATCH,
                       device=0, patience=20, name="brassica_pods")
-best = results.save_dir + "/weights/best.pt"
+best = f"{results.save_dir}/weights/best.pt"   # save_dir is a Path -> format, don't +
 print("best weights:", best)
 """))
 
