@@ -69,6 +69,21 @@ cells.append(code(
 import ultralytics; ultralytics.__version__
 """))
 
+cells.append(md(
+"""## 1b. Mount Google Drive — so weights SURVIVE a disconnect
+Colab wipes `/content` when the runtime recycles (idle timeout, etc.). Training
+output is pointed at Drive below so `best.pt`/`last.pt` are written there **as
+training runs** — a disconnect can no longer cost you the model."""))
+cells.append(code(
+"""
+from google.colab import drive
+drive.mount('/content/drive')
+import os
+RUN_DIR = "/content/drive/MyDrive/brassica_pods_runs"   # training output -> Drive
+os.makedirs(RUN_DIR, exist_ok=True)
+print("training output ->", RUN_DIR)
+"""))
+
 cells.append(md("## 2. Download the deepcanola data pools (25 MB) from Zenodo"))
 cells.append(code(
 """
@@ -228,9 +243,9 @@ cells.append(code(
 from ultralytics import YOLO
 model = YOLO(MODEL)
 results = model.train(data="pods.yaml", epochs=EPOCHS, imgsz=IMGSZ, batch=BATCH,
-                      device=0, patience=20, name="brassica_pods")
-best = f"{results.save_dir}/weights/best.pt"   # save_dir is a Path -> format, don't +
-print("best weights:", best)
+                      device=0, patience=20, project=RUN_DIR, name="brassica_pods")
+best = f"{results.save_dir}/weights/best.pt"   # on Drive (save_dir is a Path -> format)
+print("best weights (saved on Drive):", best)
 """))
 
 cells.append(md(
@@ -314,7 +329,8 @@ cells.append(code(
 import shutil
 from google.colab import files
 shutil.copy(best, "pods_best.pt")
-print("Download pods_best.pt and drop it into brassica_pods/weights/ locally.")
+print("best.pt is ALREADY safe on your Drive at:", best)
+print("Downloading a local copy too -> drop it into brassica_pods/weights/ locally.")
 print("Then: analyze(img, weights='brassica_pods/weights/pods_best.pt', greenness=True)")
 files.download("pods_best.pt")
 """))
