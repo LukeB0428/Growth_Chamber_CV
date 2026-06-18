@@ -128,7 +128,7 @@ def _load_model(weights: str | Path):
 # ─────────────────────────────────────────────────────────────────────────────
 def analyze(image, scale: Optional[PixelScale] = None,
             weights: str | Path = DEFAULT_WEIGHTS, conf: float = 0.25,
-            greenness: bool = False) -> dict:
+            greenness: bool = False, imgsz: int = 1536) -> dict:
     """Segment, count and size every pod in one RGB/BGR image.
 
     Args:
@@ -138,6 +138,9 @@ def analyze(image, scale: Optional[PixelScale] = None,
         conf:      detection confidence threshold.
         greenness: if True, also return greenness metrics over the pod union
                    (reuses scripts/greenness_metrics.py).
+        imgsz:     inference resolution; default 1536 to MATCH the training imgsz
+                   (siliques are thin — predicting at YOLO's 640 default shrinks
+                   them below training scale and undercounts).
 
     Returns the dict described in this module's docstring (plus "greenness"
     when requested).
@@ -151,7 +154,7 @@ def analyze(image, scale: Optional[PixelScale] = None,
     H, W = img.shape[:2]
 
     model = _load_model(weights)
-    results = model.predict(img, conf=conf, verbose=False)[0]
+    results = model.predict(img, conf=conf, imgsz=imgsz, verbose=False)[0]
 
     masks: list[np.ndarray] = []
     per_pod: list[dict] = []
