@@ -56,6 +56,7 @@ plants, and reuse the truth to calibrate the station.
 
 ## The Station — potted live plant, multi-view (THE PRODUCT)
 Non-destructive count of the intact living plant, on the controlled station.
+Build guide: [RIG.md](RIG.md).
 
 1. **Station rig:** booth with plain backdrop + even lighting; potted plant on a
    **turntable**, **8–12 angles**, RGB + OAK-D **stereo depth** per angle. One
