@@ -28,10 +28,11 @@ cutting — the plant is never in the cluttered chamber scene and never harveste
 for the count. This is strictly easier for the software than true in-chamber
 in-situ, and strictly less destructive than cut-and-spread.
 
-> Terminology: the capture mode `in_situ_multiview` now means **potted plant on
-> the station turntable** (controlled environment), NOT imaging in the chamber.
-> The gate behaviour (multi-view + depth required) is unchanged; only the
-> framing is. (A future rename to `station_multiview` is optional — flagged.)
+> Terminology: the capture mode `station_multiview` (renamed 2026-06-18 from
+> `in_situ_multiview`) means **potted plant on the station turntable**
+> (controlled environment), NOT imaging in the chamber. The gate behaviour
+> (multi-view + depth required) is unchanged. The failure code
+> `NO_DEPTH_IN_INSITU` keeps its locked name.
 
 ## The core problem
 A mature B. napus plant is a dense 3D bush of siliques. From any single 2D view
@@ -114,7 +115,7 @@ back on if the station can't reach ~10–15%).
 ## v2 additions (2026-06-18)
 Deltas from Build Plan v2. They sharpen the **2D counting engine** and protect the
 **Task-2 (chlorophyll) future**; they do **not** change the absolute-count strategy
-above — the in-situ absolute number still hinges on Track 2's calibrated multi-view.
+above — the station's absolute number still hinges on its calibrated multi-view.
 
 ### Counting engine — instance seg vs count regression
 Two complementary outputs; pick the count engine on measured dense-case error.
@@ -127,8 +128,8 @@ Two complementary outputs; pick the count engine on measured dense-case error.
 **Scope correction (important):** TasselNetV2+ handles **2D image-plane OVERLAP**,
 **not 3D OCCLUSION**. It regresses from *visible* density, so it cannot recover
 pods hidden behind the canopy — it undercounts hidden pods exactly like instance
-seg. Therefore scope it as the counting engine for **Track 1 (spread-and-count,
-all pods visible → pure 2D overlap)** and for **Track 2's per-view step** only. It
+seg. Therefore scope it as the counting engine for **spread-and-count (all pods
+visible → pure 2D overlap)** and for **the station's per-view step** only. It
 is **not** a general occlusion fix and does **not** substitute for multi-view 3D
 dedup. (Bonus: density/dot labels come free from our synthetic pod centroids, so
 the head-to-head trains on data we already generate.)
@@ -153,7 +154,7 @@ Do **not** revise these bounds after seeing the number.
   weed field data with **no pods** — it is **not** an external validation set for
   our siliques. Be precise about this wherever it is cited (thesis/claims).
 
-### In-situ feasibility probe — run in this order (gates the whole Track 2 rig)
+### Station feasibility probe — run in this order (gates the whole station rig)
 1. **First, smartphone → COLMAP photogrammetry as the optimistic UPPER BOUND.** If
    COLMAP (higher effective resolution) cannot resolve individual pods on a bushy
    plant, the lower-res OAK-D stereo depth won't either — **stop, do not build the
@@ -190,7 +191,7 @@ The current model has only seen excised pods on black. To work on real material:
 1. **Realistic synthetic backgrounds** — reuse the same pod cut-outs, composite
    onto real rig/greenhouse backgrounds via the existing
    [synth/generate_dataset.py](synth/generate_dataset.py). Big win, zero new
-   labelling. (Track 1 needs this less — its background *is* black cloth.)
+   labelling. (spread-and-count needs this less — its background *is* black cloth.)
 2. **Real labelled data + fine-tune** — SAM2-assisted labelling (reuse
    scripts/sam2_weights), even 30–100 images moves the needle.
 3. **Active-learning loop** — run model, label worst failures, retrain, repeat.

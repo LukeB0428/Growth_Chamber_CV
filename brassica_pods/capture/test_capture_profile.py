@@ -10,7 +10,7 @@ Sharpness/exposure/aruco/depth logic are exercised for real.
 Covers the contract's required tests:
   - compliant frame            -> passed is True
   - one frame missing each element -> the exact matching failure code
-  - in_situ_multiview, depth=None  -> NO_DEPTH_IN_INSITU
+  - station_multiview, depth=None  -> NO_DEPTH_IN_INSITU
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def test_bad_exposure():
 def test_no_depth_in_insitu():
     img = _with_marker()
     with _patch(decode_qr=_QR_OK, detect_colorchecker=_CC_OK):
-        r = cp.validate_frame(img, mode="in_situ_multiview", depth=None)
+        r = cp.validate_frame(img, mode="station_multiview", depth=None)
     assert cp.NO_DEPTH_IN_INSITU in r.reasons and not r.passed
 
 
@@ -136,7 +136,7 @@ def test_insitu_with_depth_builds_depth_scale():
     img = _with_marker()
     depth = np.full((800, 1000), 500.0, np.float32)
     with _patch(decode_qr=_QR_OK, detect_colorchecker=_CC_OK):
-        r = cp.validate_frame(img, mode="in_situ_multiview", depth=depth, fx_px=800.0)
+        r = cp.validate_frame(img, mode="station_multiview", depth=depth, fx_px=800.0)
     assert cp.NO_DEPTH_IN_INSITU not in r.reasons
     assert isinstance(r.scale, cp.DepthPixelScale)
     assert abs(r.scale.mm_per_px(10, 10) - 500.0 / 800.0) < 1e-6
@@ -216,7 +216,7 @@ def test_per_mode_marker_size_selected():
     depth = np.full((800, 1000), 500.0, np.float32)
     with _patch(decode_qr=_QR_OK, detect_colorchecker=_CC_OK):
         r_spread = cp.validate_frame(img, mode="spread")
-        r_insitu = cp.validate_frame(img, mode="in_situ_multiview",
+        r_insitu = cp.validate_frame(img, mode="station_multiview",
                                      depth=depth, fx_px=800.0)
     assert r_spread.details["aruco"]["marker_size_mm"] == 30.0
     assert r_insitu.details["aruco"]["marker_size_mm"] == 70.0

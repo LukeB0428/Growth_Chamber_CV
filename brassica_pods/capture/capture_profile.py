@@ -19,7 +19,7 @@ hardware, TasselNet. (ColorChecker here is presence-only; correction is later.)
 
 Every required detection must pass or the frame is REJECTED:
   ArUco (DICT_5X5_100) · QR sample-ID · ColorChecker presence · sharpness ·
-  exposure. For in_situ_multiview a depth map is mandatory (depth-aware scale).
+  exposure. For station_multiview a depth map is mandatory (depth-aware scale).
 
 Production frames are assumed already UNDISTORTED via the one-time ChArUco
 intrinsics/distortion calibration (see undistort()/load_calibration()).
@@ -53,7 +53,7 @@ BRASSICA_CAPTURE = {
     "needs_colorchecker": True,
     "lock_exposure": True,
 }
-MODES = ("spread", "daily_growth", "in_situ_multiview")
+MODES = ("spread", "daily_growth", "station_multiview")
 
 # ── Stable failure codes (enumerate; never free-text a reason) ───────────────
 MISSING_ARUCO = "MISSING_ARUCO"
@@ -74,8 +74,8 @@ ARUCO_DICT_ID = cv2.aruco.DICT_5X5_100
 # Per-mode physical marker side length (mm). DEFAULTS/PLACEHOLDERS — a wrong size
 # is a silent, irreversible systematic error in EVERY measurement, so they must
 # be measured from the actual printed markers before any real capture (guard
-# below). in_situ marker is larger so it resolves across the turntable distance.
-MARKER_SIZE_MM = {"spread": 30.0, "daily_growth": 30.0, "in_situ_multiview": 70.0}
+# below). station marker is larger so it resolves across the turntable distance.
+MARKER_SIZE_MM = {"spread": 30.0, "daily_growth": 30.0, "station_multiview": 70.0}
 
 # Flip to True ONLY after printing the markers, measuring the printed squares
 # with calipers, and setting MARKER_SIZE_MM to those actual values.
@@ -123,7 +123,7 @@ SAMPLE_ID_RE = re.compile(r"^([A-Z0-9]{2,8})-(\d{3})-(POD|STEM|LEAF|PLANT)-(\d{3
 class DepthPixelScale:
     """Per-pixel mm/px from depth: mm_per_px(x,y) = depth_mm(y,x) / fx_px.
 
-    Used for in_situ_multiview, where a single scalar scale is INVALID because
+    Used for station_multiview, where a single scalar scale is INVALID because
     pods sit at varying depths. Sanity-checked against the ArUco scalar at the
     marker's depth (see validate_frame).
     """
@@ -266,7 +266,7 @@ def validate_frame(image, mode: str, depth=None,
     Args:
         image:  BGR frame, assumed already undistorted (ChArUco calibration).
         mode:   one of MODES.
-        depth:  HxW depth map in mm (required for in_situ_multiview).
+        depth:  HxW depth map in mm (required for station_multiview).
         marker_size_mm: physical marker side; defaults to MARKER_SIZE_MM[mode].
         fx_px:  camera focal length in px (from intrinsics) for depth-aware scale.
         manifest: plant-level manifest {plant_id: row} (see load_manifest). If
@@ -342,7 +342,7 @@ def validate_frame(image, mode: str, depth=None,
 
     # ── Per-mode PixelScale ──────────────────────────────────────────────────
     scale = None
-    if mode == "in_situ_multiview":
+    if mode == "station_multiview":
         if depth is None:
             reasons.append(NO_DEPTH_IN_INSITU)
             details["pixel_scale"] = {"mode": mode, "type": "depth_map",

@@ -33,7 +33,7 @@ from brassica_pods.capture import capture_profile as cp
 @dataclass
 class RawFrame:
     image: np.ndarray                       # BGR
-    depth: Optional[np.ndarray] = None      # HxW mm (in_situ_multiview)
+    depth: Optional[np.ndarray] = None      # HxW mm (station_multiview)
     view_angle_deg: float = 0.0             # turntable angle, if any
     meta: dict = field(default_factory=dict)  # optional per-frame overrides
 
@@ -62,7 +62,7 @@ class OakDFrameSource(FrameSource):
     not unit-tested here — that's the one part the mock cannot cover).
 
     Mirrors scripts/capture_image.py's depthai v3 usage; yields one RawFrame per
-    trigger. depth is populated only when want_depth=True (in_situ_multiview).
+    trigger. depth is populated only when want_depth=True (station_multiview).
     """
     def __init__(self, want_depth: bool = False, n_frames: Optional[int] = None):
         self.want_depth = want_depth

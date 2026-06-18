@@ -51,14 +51,14 @@ scale/pose — *not* the full board (the board is calibration-only, below).
 > (see [common.py](common.py)). Persist it in the sidecar (below).
 
 ### Marker sizes (per mode) + confirmation guard
-Physical marker side length differs by mode (in-situ uses a larger marker so it
-resolves across the turntable working distance):
+Physical marker side length differs by mode (station mode uses a larger marker so
+it resolves across the turntable working distance):
 
 | Mode | `MARKER_SIZE_MM` (default/placeholder) |
 |---|---|
 | `spread` | 30 mm |
 | `daily_growth` | 30 mm |
-| `in_situ_multiview` | 70 mm |
+| `station_multiview` | 70 mm |
 
 These are **placeholders**. A wrong marker size is a **silent, irreversible
 systematic error in every measurement** — so the gate **refuses to start a
@@ -113,7 +113,7 @@ populated by the enforcement gate ([capture/capture_profile.py](capture/capture_
 {
   "image": "2027-01-15_enriched_P3_spread.jpg",
   "timestamp": "2027-01-15T12:00:00",
-  "capture_mode": "spread | daily_growth | in_situ_multiview",
+  "capture_mode": "spread | daily_growth | station_multiview",
   "sample_id": "EXP1-001-PLANT-000",
   "species": "brassica_napus",
   "cultivar": "<cultivar>",
@@ -140,10 +140,10 @@ populated by the enforcement gate ([capture/capture_profile.py](capture/capture_
 
 - `capture_mode` selects which pipeline path consumes the image, and which
   `pixel_scale.type` is required (see §3 / the gate).
-- `view_angle_deg` is the turntable angle (in-situ multi-view only); used by the
-  Track-2 3D dedup. `0` otherwise.
+- `view_angle_deg` is the turntable angle (`station_multiview` only); used by the
+  station 3D dedup. `0` otherwise.
 - `pixel_scale` is written from the detected ArUco (scalar) or, for
-  `in_situ_multiview`, a depth-aware per-pixel map — never hard-coded.
+  `station_multiview`, a depth-aware per-pixel map — never hard-coded.
 - A frame is kept **only if `compliance.passed == true`**; rejected frames go to
   quarantine with their `reasons` (stable failure codes, see the gate).
 
@@ -155,14 +155,14 @@ populated by the enforcement gate ([capture/capture_profile.py](capture/capture_
 
 ## 3. Capture modes
 
-### 3a. `spread` — Track 1 endpoint spread-and-count (the absolute-count backbone)
+### 3a. `spread` — spread-and-count (calibration answer-key + fallback)
 - At final harvest: detach siliques, spread on **matte black cloth**, minimal
   overlap (this is the easy 2D case the current model targets).
 - Top-down, fixed working distance, **locked exposure/WB**, ColorChecker + ArUco +
   QR in frame.
 - One `sample_id` per plant → links directly to the manual count of that plant.
 
-### 3b. `in_situ_multiview` — Track 2 (only after the COLMAP feasibility probe passes)
+### 3b. `station_multiview` — the imaging station / PRODUCT (only after the COLMAP feasibility probe passes)
 - Plant on a **turntable**; capture **8–12 views** at fixed angle steps, RGB +
   OAK-D depth at each. Same `sample_id`, incrementing `view_angle_deg`.
 - ColorChecker + ArUco + QR visible across the orbit (or at a fixed reference pose).

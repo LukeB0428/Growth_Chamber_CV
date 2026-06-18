@@ -109,7 +109,7 @@ def test_insitu_rejects_without_depth():
     with _present_detectors():
         stats = CaptureSession(
             MockFrameSource([RawFrame(_good_image(), depth=None)]),
-            "in_situ_multiview", kept, quar).run()
+            "station_multiview", kept, quar).run()
     assert stats.rejected == 1 and stats.kept == 0
 
 
