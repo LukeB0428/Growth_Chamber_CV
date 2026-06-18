@@ -10,6 +10,11 @@ in mm). **Task 1** of the Brassica imaging station; chlorophyll estimation
 > checkpoint, project paths) are reused *by reference* via
 > [`common.py`](common.py) — `scripts/` is never edited.
 
+**Planning docs:** [PLAN.md](PLAN.md) (decisions + questions for Diarmuid) ·
+[ROADMAP.md](ROADMAP.md) (technical) · [PROBE.md](PROBE.md) (feasibility gate) ·
+[RIG.md](RIG.md) (hardware) · [CAPTURE_SCHEMA.md](CAPTURE_SCHEMA.md) (capture spec).
+**Start at PLAN.md** — and run the feasibility probe before building any rig.
+
 ## Approach
 - **Model:** Ultralytics **YOLO-seg** (YOLO11-seg / YOLOv8-seg) — fastest path to
   a working counter, CPU-runnable for inference, proven on this crop.
