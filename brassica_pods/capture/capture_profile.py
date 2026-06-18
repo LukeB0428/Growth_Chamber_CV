@@ -419,12 +419,14 @@ def format_compliance(result: ComplianceResult) -> str:
     Warnings (e.g. unknown sample in warn-mode) are surfaced LOUD even on PASS,
     so they cannot slip by unnoticed.
     """
+    # ASCII only — this string is printed live on the (Windows) rig console;
+    # non-ASCII glyphs raise UnicodeEncodeError there and would crash the loop.
     if result.passed:
-        base = "PASS ✓  frame compliant"
+        base = "PASS  frame compliant"
     else:
-        base = "FAIL ✗  fix: " + ", ".join(result.reasons)
+        base = "FAIL  fix: " + ", ".join(result.reasons)
     if result.warnings:
-        base += "\n  ⚠️  WARNING: " + " | ".join(result.warnings)
+        base += "\n  !! WARNING: " + " | ".join(result.warnings)
     return base
 
 
