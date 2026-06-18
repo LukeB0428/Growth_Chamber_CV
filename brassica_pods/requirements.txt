@@ -1,0 +1,23 @@
+# brassica_pods — module-specific dependencies (in addition to the project's
+# root requirements.txt). Install into the same venv:
+#   scripts\.venv\Scripts\pip install -r brassica_pods\requirements.txt
+#
+# ultralytics pulls in torch/torchvision (CPU build on this laptop — confirmed
+# no local CUDA, so training runs on Colab/GPU and inference runs locally).
+
+ultralytics==8.4.70
+
+# opencv-python, numpy, scipy, pillow already pinned in the root requirements.txt
+# and are reused as-is. SAM2 (for annotation assist) is also already installed
+# by the root requirements and its checkpoint is shared from scripts/sam2_weights.
+
+# ── Capture compliance gate (capture/capture_profile.py) ─────────────────────
+# ArUco + QRCodeDetector + ChArUco (CharucoBoard/CharucoDetector + calibrateCamera)
+# all ship in base opencv>=4.7 (already present — verified on 4.13).
+# The ColorChecker presence check needs cv2.mcc, which is ONLY in opencv-CONTRIB.
+# In production REPLACE opencv-python with opencv-contrib-python (it is a strict
+# superset, so the existing scripts/ pipeline keeps working):
+#     pip uninstall -y opencv-python && pip install opencv-contrib-python
+# Without contrib the gate fail-closes on ColorChecker (MISSING_COLORCHECKER),
+# which is safe but rejects every frame — so contrib is required at the rig.
+# opencv-contrib-python==4.13.0.92   # uncomment + swap when wiring real captures

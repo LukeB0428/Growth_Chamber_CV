@@ -1,0 +1,12 @@
+# Ultralytics YOLO-seg dataset config for Brassica pods.
+# Paths are relative to this module's data/ directory. Point `path` at whichever
+# split you train on: the synthetic-only set (data/synthetic) to bootstrap, or
+# the merged real+synthetic set (data/dataset) once real labels exist.
+
+path: ../data/dataset      # dataset root (override with data/synthetic to bootstrap)
+train: images/train
+val: images/val
+
+# Single foreground class.
+names:
+  0: pod

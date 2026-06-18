@@ -20,6 +20,19 @@ scripts/sam2_weights/
 *.pt
 *.pth
 
+# ── brassica_pods generated data (keep dir skeletons via .gitkeep) ───────────
+brassica_pods/data/raw/*
+brassica_pods/data/labels/*
+brassica_pods/data/pod_cutouts/*
+brassica_pods/data/pod_masks/*
+brassica_pods/data/backgrounds/*
+brassica_pods/data/synthetic/*
+brassica_pods/data/dataset/*
+brassica_pods/weights/*
+brassica_pods/colab/*.zip
+brassica_pods/data/eval_ground_truth.csv
+!**/.gitkeep
+
 # ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
