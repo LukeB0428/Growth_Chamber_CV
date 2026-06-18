@@ -11,8 +11,12 @@ COUNT against the real 'novel' images. The embedded synth/eval logic mirrors
 brassica_pods/synth/generate_dataset.py + eval/build_ground_truth.py — keep them
 in sync if the canonical module changes.
 """
-import json
+import json, sys
 from pathlib import Path
+
+# Emit the Colab notebook by default, or the Kaggle variant with --kaggle.
+PLATFORM = "kaggle" if "--kaggle" in sys.argv else "colab"
+IS_KAGGLE = PLATFORM == "kaggle"
 
 def md(text):
     return {"cell_type": "markdown", "metadata": {}, "source": text.splitlines(keepends=True)}
@@ -26,7 +30,7 @@ cells = []
 cells.append(md(
 """# Brassica napus pod (silique) segmentation — YOLO11-seg training
 
-**Self-contained.** Runtime ▸ *Change runtime type* ▸ **GPU**, then Runtime ▸ **Run all**.
+**Self-contained.** Enable a **GPU** accelerator, then **Run All** (see the setup note below).
 
 **Design (matches the deepcanola method):** the real scan images have *no masks*
 (their COCO file lists images but zero annotations), so they cannot be training
@@ -61,7 +65,7 @@ cells.append(code(
 import subprocess, torch
 print(subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True).stdout or "NO GPU")
 print("torch", torch.__version__, "CUDA", torch.cuda.is_available())
-assert torch.cuda.is_available(), "Set Runtime > Change runtime type > GPU, then Run all."
+assert torch.cuda.is_available(), "Enable a GPU (Colab: Runtime>Change runtime type; Kaggle: Settings>Accelerator), then Run All."
 """))
 cells.append(code(
 """
@@ -69,12 +73,27 @@ cells.append(code(
 import ultralytics; ultralytics.__version__
 """))
 
-cells.append(md(
+if IS_KAGGLE:
+    cells.append(md(
+"""## 1b. Output location (Kaggle) — weights persist automatically
+`/kaggle/working` is saved as the notebook's **Output** and survives after the
+run, so `best.pt` is never lost. Best: **Settings ▸ Internet ▸ On** (needed for
+the Zenodo download), and run via **Save Version ▸ Save & Run All (Commit)** to
+run detached on Kaggle's servers — you can close your laptop."""))
+    cells.append(code(
+"""
+import os
+RUN_DIR = "/kaggle/working/brassica_pods_runs"   # persisted as Kaggle output
+os.makedirs(RUN_DIR, exist_ok=True)
+print("training output ->", RUN_DIR)
+"""))
+else:
+    cells.append(md(
 """## 1b. Mount Google Drive — so weights SURVIVE a disconnect
 Colab wipes `/content` when the runtime recycles (idle timeout, etc.). Training
 output is pointed at Drive below so `best.pt`/`last.pt` are written there **as
 training runs** — a disconnect can no longer cost you the model."""))
-cells.append(code(
+    cells.append(code(
 """
 from google.colab import drive
 drive.mount('/content/drive')
@@ -323,8 +342,19 @@ for a,ip in zip(ax, sample):
 plt.tight_layout(); plt.show()
 """))
 
-cells.append(md("## 8. Export weights + results"))
-cells.append(code(
+cells.append(md("## 8. Export weights"))
+if IS_KAGGLE:
+    cells.append(code(
+"""
+import shutil
+shutil.copy(best, "/kaggle/working/pods_best.pt")
+print("best.pt -> /kaggle/working/pods_best.pt")
+print("Download it from the Output panel (right sidebar), or from the committed run's output.")
+print("Drop it into brassica_pods/weights/ locally, then:")
+print("  analyze(img, weights='brassica_pods/weights/pods_best.pt', greenness=True)")
+"""))
+else:
+    cells.append(code(
 """
 import shutil
 from google.colab import files
@@ -356,6 +386,6 @@ nb = {
     "nbformat": 4, "nbformat_minor": 0,
 }
 
-out = Path(__file__).resolve().parent / "train_pods_colab.ipynb"
+out = Path(__file__).resolve().parent / f"train_pods_{PLATFORM}.ipynb"
 out.write_text(json.dumps(nb, indent=1))
-print(f"wrote {out} ({len(cells)} cells)")
+print(f"wrote {out} ({len(cells)} cells, platform={PLATFORM})")

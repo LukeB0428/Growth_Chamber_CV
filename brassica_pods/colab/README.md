@@ -15,9 +15,25 @@ This is why the notebook has no "convert br017.json → masks" step — there ar
 masks in it to convert.
 
 ## How to run
-1. Open `train_pods_colab.ipynb` in Google Colab.
+
+### Colab — `train_pods_colab.ipynb`
+1. Open in Google Colab.
 2. **Runtime ▸ Change runtime type ▸ GPU**.
-3. **Runtime ▸ Run all.**
+3. **Runtime ▸ Run all.** (Mounts Drive so weights survive a disconnect.)
+
+### Kaggle — `train_pods_kaggle.ipynb` (use if Colab GPU is rate-limited)
+Kaggle gives free T4/P100, ~30 h/week, and a detached "commit" run mode.
+1. kaggle.com ▸ Create ▸ **New Notebook** ▸ File ▸ **Import Notebook** ▸ upload
+   `train_pods_kaggle.ipynb`.
+2. Right sidebar: **Settings ▸ Accelerator ▸ GPU T4 ×2**, and **Internet ▸ On**
+   (required for the Zenodo download + pip).
+3. **Run All** — or **Save Version ▸ Save & Run All (Commit)** to run detached on
+   Kaggle's servers (close your laptop; output persists).
+4. Get `pods_best.pt` from `/kaggle/working` (Output panel / committed run output).
+
+Both notebooks are generated from `_make_notebook.py`
+(`python _make_notebook.py` / `--kaggle`) — keep edits in the generator, not the
+`.ipynb` files.
 
 The notebook will: download the 25 MB data pools from Zenodo → regenerate the
 synthetic dataset on the Colab box → train YOLO11-seg → download the 1.4 GB real
