@@ -40,6 +40,31 @@ from brassica_pods.common import PixelScale, WEIGHTS_DIR, ensure_scripts_importa
 
 DEFAULT_WEIGHTS = WEIGHTS_DIR / "pods_best.pt"
 
+# Mask-based dedup: drop a detection if this fraction of ITS mask is already
+# covered by a higher-confidence detection. Catches duplicate boxes on one
+# diagonal pod that axis-aligned NMS misses (their boxes barely overlap but
+# their masks nearly coincide).
+DEDUP_CONTAINMENT = 0.45
+
+
+def _dedup_masks(masks, confs):
+    """Greedy mask-NMS: keep highest-confidence masks, drop ones mostly covered
+    by an already-kept mask. Returns the indices to KEEP (in original order)."""
+    order = sorted(range(len(masks)), key=lambda i: (confs[i] if confs is not None
+                                                      else 0.0), reverse=True)
+    kept_union_idx: list[int] = []
+    keep = []
+    for i in order:
+        m = masks[i]
+        area = int(m.sum())
+        if area == 0:
+            continue
+        covered = max((int(np.logical_and(m, masks[j]).sum()) / area
+                       for j in keep), default=0.0)
+        if covered <= DEDUP_CONTAINMENT:
+            keep.append(i)
+    return sorted(keep)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Greenness — reuse the Arabidopsis pipeline's metric module (no rewrite)
@@ -126,9 +151,16 @@ def _load_model(weights: str | Path):
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
+# Drop detections smaller than this fraction of the median pod area — removes
+# the small "beak/tip" slivers the model detects as separate pods. Tuned on 12
+# hand-counted scans (MAE 8.4 -> 0.3); re-validate on a more diverse set.
+MIN_AREA_FRAC = 0.30
+
+
 def analyze(image, scale: Optional[PixelScale] = None,
             weights: str | Path = DEFAULT_WEIGHTS, conf: float = 0.25,
-            greenness: bool = False, imgsz: int = 1536) -> dict:
+            greenness: bool = False, imgsz: int = 1536, dedup: bool = True,
+            min_area_frac: float = MIN_AREA_FRAC) -> dict:
     """Segment, count and size every pod in one RGB/BGR image.
 
     Args:
@@ -162,6 +194,8 @@ def analyze(image, scale: Optional[PixelScale] = None,
     if results.masks is not None:
         confs = (results.boxes.conf.cpu().numpy()
                  if results.boxes is not None else None)
+        # Collect raw masks first.
+        raw_masks, raw_confs = [], []
         for i, mdata in enumerate(results.masks.data):
             m = mdata.cpu().numpy().astype(np.uint8)
             if m.shape[:2] != (H, W):                 # YOLO masks come at net res
@@ -169,9 +203,22 @@ def analyze(image, scale: Optional[PixelScale] = None,
             m_bool = m > 0
             if not m_bool.any():
                 continue
-            masks.append(m_bool)
-            info = pod_size(m_bool, scale)
-            info["confidence"] = float(confs[i]) if confs is not None else None
+            raw_masks.append(m_bool)
+            raw_confs.append(float(confs[i]) if confs is not None else None)
+
+        # Mask-based dedup — removes duplicate boxes on one diagonal pod that
+        # axis-aligned NMS leaves behind.
+        keep = (_dedup_masks(raw_masks, raw_confs) if dedup
+                else list(range(len(raw_masks))))
+        # Size filter — drop beak/tip slivers far smaller than a typical pod.
+        if keep and min_area_frac > 0:
+            areas = {i: int(raw_masks[i].sum()) for i in keep}
+            med = float(np.median(list(areas.values())))
+            keep = [i for i in keep if areas[i] >= min_area_frac * med]
+        for i in keep:
+            masks.append(raw_masks[i])
+            info = pod_size(raw_masks[i], scale)
+            info["confidence"] = raw_confs[i]
             per_pod.append(info)
 
     out = {
