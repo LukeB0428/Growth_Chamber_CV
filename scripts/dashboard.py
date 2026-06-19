@@ -288,7 +288,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigation",
-        ["Overview", "Growth Trends", "Per-Pot Dashboard", "Ground Truth", "Log Readings", "Run Analysis", "Live View", "Timelapse", "Statistics", "Metrics"],
+        ["Overview", "Growth Trends", "Per-Pot Dashboard", "Ground Truth", "Log Readings", "Run Analysis", "Live View", "Live Monitoring", "Timelapse", "Statistics", "Metrics"],
         label_visibility="collapsed",
     )
 
@@ -2097,6 +2097,149 @@ elif page == "Timelapse":
                     st.rerun()
                 else:
                     st.error(f"Failed: {result.stderr[-500:] if result.stderr else 'unknown error'}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: LIVE MONITORING  (Supabase-backed — controller + environment telemetry)
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "Live Monitoring":
+    st.markdown("""
+    <div class='main-header'>
+        <h1>Live Monitoring</h1>
+        <p>Controller + environment telemetry, read live from the Supabase data layer</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    from datetime import datetime, timedelta, timezone
+
+    # The dashboard is a READER of the same normalized layer the agent reads — it does
+    # no monitoring logic itself. Needs SUPABASE_URL / SUPABASE_KEY in its environment
+    # (e.g. the streamlit systemd unit's EnvironmentFile). Degrades gracefully if the
+    # data layer isn't live yet.
+    try:
+        from observations_db import get_client
+        _client = get_client()
+    except Exception as e:
+        st.info("Supabase data layer not configured or unreachable yet. Set SUPABASE_URL "
+                "and SUPABASE_KEY in the dashboard's environment once ingestion is live.")
+        st.caption(f"Details: {e}")
+        st.stop()
+
+    SETPOINT_PPM = 1100  # deployed firmware `treatment`; see config/manifests/arabidopsis.yaml
+    EXPECTED_SOURCES = {
+        "co2_controller_enriched": "Enriched — CO₂ controller",
+        "env_logger_control":      "Control — environmental logger",
+    }
+
+    win = st.selectbox("Window", ["Last 6 hours", "Last 24 hours", "Last 7 days"], index=1)
+    hours, rule = {
+        "Last 6 hours":  (6,   "1min"),
+        "Last 24 hours": (24,  "5min"),
+        "Last 7 days":   (168, "1H"),
+    }[win]
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    @st.cache_data(ttl=30, show_spinner=False)
+    def _health(_cutoff_iso):
+        rows = (_client.table("observations_unified")
+                .select("source,timestamp,value")
+                .eq("metric_name", "rtc_offset_sec")
+                .order("timestamp", desc=True).limit(200).execute().data)
+        latest = {}
+        for r in rows:
+            latest.setdefault(r["source"], r)
+        return latest
+
+    @st.cache_data(ttl=60, show_spinner=False)
+    def _series(metric, _cutoff_iso, cap=20000):
+        rows = (_client.table("observations_unified")
+                .select("timestamp,value,chamber")
+                .eq("metric_name", metric)
+                .gte("timestamp", _cutoff_iso)
+                .order("timestamp", desc=True).limit(cap).execute().data)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+            df['value'] = pd.to_numeric(df['value'], errors='coerce')
+            df = df.sort_values('timestamp')
+        return df
+
+    def _line(df, title, ylabel, setpoint=None):
+        fig = go.Figure()
+        for chamber in ['enriched', 'control']:
+            sub = df[df['chamber'] == chamber][['timestamp', 'value']].dropna() if not df.empty else df
+            if sub.empty:
+                continue
+            sub = sub.set_index('timestamp').resample(rule).mean().dropna().reset_index()
+            fig.add_trace(go.Scatter(x=sub['timestamp'], y=sub['value'], mode='lines',
+                          name=chamber.capitalize(), line=dict(color=COLORS[chamber], width=2)))
+        if setpoint is not None:
+            fig.add_hline(y=setpoint, line_dash="dash", line_color="#888",
+                          annotation_text=f"setpoint {setpoint:g}")
+        fig.update_yaxes(title_text=ylabel)
+        return apply_chart_style(fig, title)
+
+    # ── Health strip — are both loggers arriving, and not swapped? ──────────────
+    st.markdown("<div class='section-title'>Logger Health</div>", unsafe_allow_html=True)
+    health = _health(cutoff)
+    now_utc = datetime.now(timezone.utc)
+    hcols = st.columns(len(EXPECTED_SOURCES))
+    for col, (src, label) in zip(hcols, EXPECTED_SOURCES.items()):
+        rec = health.get(src)
+        if not rec:
+            col.metric(label, "NO DATA", delta="never seen", delta_color="inverse")
+            continue
+        seen = pd.to_datetime(rec["timestamp"], utc=True)
+        age_s = (now_utc - seen.to_pydatetime()).total_seconds()
+        age_txt = (f"{int(age_s)}s ago" if age_s < 90 else
+                   f"{int(age_s/60)}m ago" if age_s < 5400 else f"{int(age_s/3600)}h ago")
+        offset = rec["value"]
+        ok = abs(offset) < 120
+        col.metric(label, age_txt, delta=f"RTC offset {offset:.0f}s · {'OK' if ok else 'DRIFT?'}",
+                   delta_color="normal" if ok else "inverse")
+    st.caption("Two near-identical Arduinos — if a chamber reads wrong, check the udev symlinks (enriched/control swap).")
+
+    # ── CO₂ ─────────────────────────────────────────────────────────────────────
+    st.markdown("<div class='section-title'>CO₂ — Enriched vs Control</div>", unsafe_allow_html=True)
+    st.plotly_chart(_line(_series('measured_co2_ppm', cutoff), '', 'CO₂ (ppm)', setpoint=SETPOINT_PPM),
+                    use_container_width=True)
+    st.caption("Control CO₂ carries a −269 ppm firmware offset and is not cross-calibrated with the "
+               "enriched K30 — read the inter-chamber gap with the manifest caveat in mind.")
+
+    # ── Controller performance (enriched only) ──────────────────────────────────
+    st.markdown("<div class='section-title'>Controller — Duty & Error</div>", unsafe_allow_html=True)
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.plotly_chart(_line(_series('duty_cycle', cutoff), 'Duty cycle (0–500)', 'duty'),
+                        use_container_width=True)
+    with dc2:
+        st.plotly_chart(_line(_series('error_ppm', cutoff), 'Error (setpoint − measured)', 'ppm'),
+                        use_container_width=True)
+
+    # ── Environment ─────────────────────────────────────────────────────────────
+    st.markdown("<div class='section-title'>Environment</div>", unsafe_allow_html=True)
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.plotly_chart(_line(_series('temp_c', cutoff), 'Temperature', '°C'), use_container_width=True)
+        st.caption("Inter-chamber temperature is NOT cross-calibrated (manifest caveat) — humidity is the reliable signal.")
+    with ec2:
+        st.plotly_chart(_line(_series('humidity_pct', cutoff), 'Humidity', '%'), use_container_width=True)
+
+    # ── Agent reports (placeholder until stage 3) ───────────────────────────────
+    st.markdown("<div class='section-title'>Agent Reports</div>", unsafe_allow_html=True)
+    try:
+        reps = (_client.table("agent_reports").select("created_at,kind,summary")
+                .order("created_at", desc=True).limit(5).execute().data)
+        if reps:
+            for r in reps:
+                st.markdown(f"**{r.get('kind', 'report')}** · {r.get('created_at', '')}")
+                st.write(r.get('summary', ''))
+        else:
+            st.caption("No agent reports yet.")
+    except Exception:
+        st.caption("Agent not running yet (stage 3) — this panel will show its twice-daily checks "
+                   "and weekly summaries, read from the same layer.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
