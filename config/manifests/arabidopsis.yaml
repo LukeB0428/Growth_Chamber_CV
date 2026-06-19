@@ -1,0 +1,119 @@
+# ============================================================================
+# Experiment context manifest — Arabidopsis CO2 chamber trial
+# Loaded by the monitoring agent. Agent code stays identical across stations;
+# only this file changes. Targets are pinned to DEPLOYED firmware, not the brief.
+# ============================================================================
+
+experiment:
+  id: ee496_arabidopsis_round2
+  species: Arabidopsis thaliana
+  chambers: [enriched, control]
+  pots_per_chamber: 8
+  sealed: false              # chambers have ventilation holes — venting can be benign
+
+# ----------------------------------------------------------------------------
+# Controllers — fingerprint of the actual firmware behaviour
+# ----------------------------------------------------------------------------
+controllers:
+  enriched:
+    firmware: EE496_FYP_CO2Control_1.ino   # DEPLOYED unit (setpoint 1100)
+    role: dosing
+    co2_setpoint_ppm: 1100                 # firmware `treatment`
+    co2_tolerance_ppm: 140                 # MONITORING policy (not from firmware)
+    dosing_window_local: "06:00-19:00"     # valve forced LOW when hr<6 or hr>19
+    duty_cycle_range: [0, 500]
+    control_type: proportional_15s_projection
+    gain_schedule: {normal_gain: 5, high_gain_above_ppm: 1120, high_gain: 20}
+    safety_cutoff_ppm: 1800                # valve hard-closed above this
+    watchdog: "software reset if co2_1min <= 0 and duty >= 425"
+    co2_offset_ppm: 0                      # raw K30, no offset
+  control:
+    firmware: EnvironmentalLogger_EE496_v2_1.ino
+    role: logging_only                     # valve held LOW, no dosing
+    co2_offset_ppm: -269                   # applied in firmware, calibrated 08/04/2026
+
+# ----------------------------------------------------------------------------
+# Data cadence — the agent must not assume a uniform sample rate
+# ----------------------------------------------------------------------------
+cadence:
+  serial_live_sec: 5                       # control tick when the serial feed is up
+  sd_backfill_sec: 3600                    # SD reconciliation is HOURLY resolution only
+
+# ----------------------------------------------------------------------------
+# Caveats — encoded so the agent cannot over-claim (statistical-honesty guardrail)
+# ----------------------------------------------------------------------------
+caveats:
+  - id: bme680_not_cross_calibrated
+    severity: high
+    rule: >
+      The two BME680 sensors were never cross-calibrated. Do NOT report an
+      inter-chamber TEMPERATURE differential as a real physical difference.
+      The HUMIDITY gap is the reliable environmental signal.
+  - id: co2_sensors_not_cross_calibrated
+    severity: high
+    rule: >
+      Enriched CO2 is raw K30; control CO2 has a -269 ppm firmware offset. An
+      inter-chamber CO2 differential is partly a calibration artifact and must
+      not be reported as a pure physical difference.
+  - id: rtc_reset_risk
+    severity: high
+    rule: >
+      The RTC can be rewound to a fixed date on a watchdog/boot reset (pre-patch
+      firmware). Flag any backward jump in rtc_timestamp > 60 s, and flag any
+      |rtc_offset_sec| above tolerance, before trusting time-windowed stats.
+    detector: "rtc_offset_sec, backward rtc_timestamp deltas"
+
+# ----------------------------------------------------------------------------
+# Benign patterns — alert triage matches against these BEFORE firing (declarative,
+# so the LLM classifies against rules, not from memory)
+# ----------------------------------------------------------------------------
+benign_patterns:
+  - id: economiser_venting
+    description: "Short CO2 dips from ventilation-hole exchange; chamber is not sealed."
+    signature: "brief measured_co2 dip with duty_cycle responding upward, recovers < N min"
+  - id: overnight_no_dosing
+    description: "Zero dosing 19:00-06:00 is correct behaviour, not a fault."
+    signature: "control_state = overnight_closed"
+
+# ----------------------------------------------------------------------------
+# Fault rules — deterministic floor (these fire WITHOUT the LLM; agent triages on top)
+# ----------------------------------------------------------------------------
+fault_rules:
+  - id: dosing_undershoot
+    when: "control_state = dosing AND measured_co2 < (setpoint - co2_tolerance) for >= 15 min"
+    severity: high
+  - id: duty_pinned_high
+    when: "duty_cycle >= 500 sustained for >= 15 min during dosing window"
+    severity: high
+  - id: sensor_dropout
+    when: "measured_co2 <= 0 OR temp_c <= -7000"   # firmware writes -7999 on BME fail
+    severity: high
+
+# ----------------------------------------------------------------------------
+# Phenotype targets — from config/species/arabidopsis.json (CV pipeline metrics)
+# ----------------------------------------------------------------------------
+phenotype_targets:
+  canopy_cover_pct:  {seedling: 1.0, vegetative: 5.0, dense_mature: 40.0}
+  ngrdi_mean:        {stressed_below: 0.05, healthy_min: 0.06, peak: 0.20}
+  health_score:      {healthy_min: 80, mild_stress: 60, severe_below: 40}
+  bolting:           {min_days_for_trend: 5, depth_height_mm: 40.0}
+
+# ----------------------------------------------------------------------------
+# Statistical policy — comparative claims must carry a computed test
+# ----------------------------------------------------------------------------
+stats_policy:
+  comparative_tests: [mann_whitney_u, fisher_exact, cohens_d]
+  rule: >
+    Any enriched-vs-control claim must be accompanied by a p-value and an effect
+    size from one of the listed tests. Descriptive queries (current value, trend)
+    are exempt and must not fabricate a test.
+
+# ----------------------------------------------------------------------------
+# Common questions — seeds for the interactive Q&A mode
+# ----------------------------------------------------------------------------
+common_questions:
+  - "Is the enriched chamber holding setpoint during the dosing window?"
+  - "Has the duty cycle been pinned at 500 today?"
+  - "What is the current humidity gap between chambers?"
+  - "Which pots have bolted, and when?"
+  - "Is there any sign of pot-calibration drift this week?"
