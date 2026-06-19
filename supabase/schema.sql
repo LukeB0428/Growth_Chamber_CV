@@ -68,12 +68,13 @@ create table if not exists observations (
   metric_name   text not null,
   value         double precision,
   units         text,
-  source        text not null,             -- 'cv_pipeline' | 'co2_controller_enriched' | ...
-  chamber       text,                       -- enriched | control  (nullable)
-  pot_label     text,                       -- P1..P8              (nullable)
+  source        text not null,             -- 'cv_pipeline' | 'co2_controller_enriched' | 'env_logger_control'
+  chamber       text not null default '',   -- enriched | control | '' — NOT NULL so PostgREST upsert
+  pot_label     text not null default '',   -- P1..P8 | ''            can target a plain unique constraint
 
-  unique (experiment_id, timestamp, metric_name, source,
-          coalesce(chamber, ''), coalesce(pot_label, ''))
+  -- Natural key includes metric_name: many metrics share a (timestamp, source).
+  -- Plain columns (no coalesce expr) so on_conflict works via supabase-py.
+  unique (experiment_id, timestamp, metric_name, source, chamber, pot_label)
 );
 
 create index if not exists idx_obs_time   on observations (timestamp);
@@ -96,7 +97,7 @@ create or replace view observations_unified as
     m.units,
     c.source,
     case when c.source like '%enriched%' then 'enriched' else 'control' end as chamber,
-    null::text                            as pot_label
+    ''::text                              as pot_label
   from control_telemetry c
   cross join lateral (values
       ('setpoint_ppm',     c.setpoint_ppm,     'ppm'),
@@ -107,6 +108,7 @@ create or replace view observations_unified as
       ('temp_c',           c.temp_c,           'celsius'),
       ('humidity_pct',     c.humidity_pct,     'pct'),
       ('pressure_mbar',    c.pressure_mbar,    'mbar'),
-      ('gas_kohm',         c.gas_kohm,         'kohm')
+      ('gas_kohm',         c.gas_kohm,         'kohm'),
+      ('rtc_offset_sec',   c.rtc_offset_sec,   'seconds')
   ) as m(metric_name, value, units)
   where m.value is not null;

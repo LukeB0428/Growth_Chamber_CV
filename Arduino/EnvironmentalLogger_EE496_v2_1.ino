@@ -157,7 +157,17 @@ void setup()
 
   // RTC - update DateTime before each upload, no leading zeros on month/day
   digitalWrite(10, HIGH);
-  rtc.adjust(DateTime(2026, 4, 29, 12, 0, 0)); // <-- UPDATE BEFORE UPLOADING
+  // RTC: only set the clock when it has actually lost power / never been set.
+  // The previous unconditional rtc.adjust() rewound the clock to a FIXED date on
+  // every boot, silently corrupting downstream time-windowed statistics.
+  // ONE-TIME RECOVERY for a board already holding a wrong date with battery
+  // backup: uncomment the unconditional line below, flash, confirm the time on the
+  // ENV serial line, then re-comment and re-flash.
+  if (!rtc.initialized() || rtc.lost_power()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+  rtc.start();
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // <-- ONE-TIME force-set, then re-comment
   pinMode(SS, OUTPUT);
 
   // SD card
@@ -258,6 +268,21 @@ void loop()
       co2_24h_count++;
       co2_24h_avg   = co2_24h_sum / co2_24h_count;
     }
+
+    // --- Stream environmental telemetry over serial every 5s ---
+    // Control-chamber logger (no dosing). The Pi routes this to the long
+    // observations table, NOT control_telemetry.
+    // Contract (fixed order, parsed Pi-side): ENV prefix, then
+    //   unixtime, co2, co2_5min, co2_24h, temp, pressure, humidity, gas
+    Serial.print(F("ENV,"));
+    Serial.print(nowCO2.unixtime()); Serial.print(',');
+    Serial.print(co2);               Serial.print(',');
+    Serial.print(co2ave5);           Serial.print(',');
+    Serial.print(co2_24h_avg);       Serial.print(',');
+    Serial.print(temp);              Serial.print(',');
+    Serial.print(pressure);          Serial.print(',');
+    Serial.print(humidity);          Serial.print(',');
+    Serial.println(gas);
 
     pco2 = co2;
     previousMillis3 = currentMillis3;

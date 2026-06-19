@@ -1,0 +1,17 @@
+# udev rules — pin each Arduino to a STABLE symlink by its USB serial number, so
+# ttyACM enumeration order can never swap enriched <-> control (which would log one
+# chamber's data under the other's name, silently).
+#
+# Find each board's serial (plug in ONE at a time to be sure which is which):
+#   udevadm info -a -n /dev/ttyACM0 | grep '{serial}' | head -1
+#
+# Fill ATTRS{serial} below, then:
+#   sudo cp deploy/99-growthchamber-arduino.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   # unplug/replug both; confirm: ls -l /dev/ttyACM-enriched /dev/ttyACM-control
+#
+# idVendor note: genuine Arduino Mega = 2341; clones vary (2A03, or CH340 = 1a86).
+# Match on serial alone if your boards report no stable idVendor.
+
+SUBSYSTEM=="tty", ATTRS{serial}=="<ENRICHED_BOARD_SERIAL>", SYMLINK+="ttyACM-enriched"
+SUBSYSTEM=="tty", ATTRS{serial}=="<CONTROL_BOARD_SERIAL>",  SYMLINK+="ttyACM-control"

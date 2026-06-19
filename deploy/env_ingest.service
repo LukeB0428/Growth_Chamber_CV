@@ -1,5 +1,5 @@
 [Unit]
-Description=Growth Chamber serial -> Supabase ingestion (enriched CO2 controller)
+Description=Growth Chamber serial -> Supabase ingestion (control env logger)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,9 +8,9 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/Growth_Chamber_cv
 EnvironmentFile=/home/pi/Growth_Chamber_cv/.env.monitoring
-# Bind to the STABLE udev symlink, never /dev/ttyACM0 (enumeration can swap).
+# Bind to the STABLE udev symlink, never /dev/ttyACM1 (enumeration can swap).
 ExecStart=/home/pi/Growth_Chamber_cv/scripts/.venv/bin/python scripts/serial_ingest.py \
-  --role controller --port /dev/ttyACM-enriched --source co2_controller_enriched
+  --role env_logger --port /dev/ttyACM-control --source env_logger_control
 Restart=always
 RestartSec=5
 

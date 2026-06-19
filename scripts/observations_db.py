@@ -34,6 +34,13 @@ CTRL_FIELDS = [
     "temp", "pressure", "humidity", "gas",
 ]
 
+# Fixed field order of the firmware ENV serial line (control-chamber env logger).
+# See Arduino/EnvironmentalLogger_EE496_v2_1.ino.
+ENV_FIELDS = [
+    "unixtime", "co2", "co2_5min", "co2_24h",
+    "temp", "pressure", "humidity", "gas",
+]
+
 
 def get_client():
     url = os.environ.get("SUPABASE_URL")
@@ -155,5 +162,59 @@ def upsert_control(client, rows):
         return 0
     client.table("control_telemetry").upsert(
         rows, on_conflict="source,rtc_timestamp"
+    ).execute()
+    return len(rows)
+
+
+def parse_env_line(line, chamber="control"):
+    """Parse an 'ENV,...' serial line -> LIST of long-table observation rows (one per
+    metric). The control-chamber logger has no controller fields, so it routes to
+    `observations`, not control_telemetry. Metric names align with the melt-view so
+    observations_unified yields apples-to-apples cross-chamber rows (the CO2/temp
+    calibration caveat lives in the manifest, not here). Returns None if malformed;
+    the caller adds experiment_id + source."""
+    line = line.strip()
+    if not line.startswith("ENV,"):
+        return None
+    parts = line.split(",")
+    if len(parts) != len(ENV_FIELDS) + 1:
+        return None
+    v = dict(zip(ENV_FIELDS, parts[1:]))
+    try:
+        unixtime = int(float(v["unixtime"]))
+    except (TypeError, ValueError):
+        return None
+
+    rtc_iso, offset = _rtc_fields(unixtime)
+    metrics = [
+        ("measured_co2_ppm", _f(v["co2"]),      "ppm"),
+        ("co2_5min_ppm",     _f(v["co2_5min"]), "ppm"),
+        ("temp_c",           _f(v["temp"]),     "celsius"),
+        ("pressure_mbar",    _f(v["pressure"]), "mbar"),
+        ("humidity_pct",     _f(v["humidity"]), "pct"),
+        ("gas_kohm",         _f(v["gas"]),      "kohm"),
+        ("rtc_offset_sec",   offset,            "seconds"),  # drift guard for this logger
+    ]
+    rows = []
+    for name, val, units in metrics:
+        if val is None:
+            continue
+        rows.append({
+            "timestamp":   rtc_iso,
+            "metric_name": name,
+            "value":       val,
+            "units":       units,
+            "chamber":     chamber,
+            "pot_label":   "",
+        })
+    return rows
+
+
+def upsert_observations(client, rows):
+    """Upsert long-table observation rows. Idempotent on the full natural key."""
+    if not rows:
+        return 0
+    client.table("observations").upsert(
+        rows, on_conflict="experiment_id,timestamp,metric_name,source,chamber,pot_label"
     ).execute()
     return len(rows)
