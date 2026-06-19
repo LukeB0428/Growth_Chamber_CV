@@ -1,0 +1,16 @@
+[Unit]
+Description=Growth Chamber serial -> Supabase ingestion (CO2 controller)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Growth_Chamber_cv
+EnvironmentFile=/home/pi/Growth_Chamber_cv/.env.monitoring
+ExecStart=/home/pi/Growth_Chamber_cv/scripts/.venv/bin/python scripts/serial_ingest.py --source co2_controller_enriched
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
