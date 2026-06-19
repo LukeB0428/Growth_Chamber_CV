@@ -19,6 +19,9 @@ melt-view, so cross-chamber humidity/CO2/temp comparisons read from that single 
 - `scripts/sd_reconcile.py` — hourly SD `datalog.txt` backfill (cron).
 - `scripts/verify_ingest.py` — the four-point live-path validation.
 - `scripts/observations_db.py` — shared client + parsers.
+- `scripts/fault_floor.py` — deterministic fault floor (no LLM) → `alerts` table.
+- `scripts/aggregate.py` — pre-aggregation + the gate (`summarize`/`decide`).
+- `scripts/agent_runner.py` — scheduled agent (`--mode check|report`), gated.
 
 ## Wiring two near-identical Arduinos (do this FIRST)
 Two Mega boards on the Pi can swap `ttyACM0`/`ttyACM1` on reboot. If they swap, you
@@ -37,6 +40,7 @@ a **powered USB hub** — fixes the port budget and the brownout at once.
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service-role-or-anon-key>
 EXPERIMENT_ID=ee496_arabidopsis_round2
+ANTHROPIC_API_KEY=sk-ant-...        # only needed by agent_runner.py (not ingestion)
 ```
 
 ## Install
@@ -64,6 +68,23 @@ scripts/.venv/bin/python scripts/verify_ingest.py
    `rtc_offset_sec` is logged and ~0 (drift/reset shows as a large offset).
 4. **Melt-view** — `observations_unified` returns the joined control tuple and both
    chambers' metrics.
+
+## Agent layer (stage 3) — two tiers, token-frugal
+The deterministic floor runs continuously (no tokens); the LLM agent runs on a sparse
+schedule and skips the LLM entirely on a clean check.
+```bash
+# crontab -e   (PYBIN = scripts/.venv/bin/python, ROOT = /home/pi/Growth_Chamber_cv)
+*/5  * * * *  cd ROOT && PYBIN scripts/fault_floor.py            >> /tmp/floor.log 2>&1
+0  8,20 * * *  cd ROOT && PYBIN scripts/agent_runner.py --mode check   >> /tmp/agent.log 2>&1
+30   6 * * 0  cd ROOT && PYBIN scripts/agent_runner.py --mode report  >> /tmp/agent.log 2>&1
+```
+- **Floor** (`*/5`): evaluates controller thresholds, opens/resolves `alerts`. Never-miss,
+  independent of the agent/API/network; also logs to `results/fault_floor.log`.
+- **check** (08:00 / 20:00): a clean run writes a templated "nominal" report and makes
+  **no LLM call**. Only flags/alerts cost tokens (Haiku, ~450-token prompt).
+- **report** (weekly): one Sonnet narrative call.
+- Dry-run any time without spending tokens: `agent_runner.py --mode check --dry-run`.
+- `agent_reports.tokens_in/out` track spend; the dashboard's Agent Reports panel reads it.
 
 ## First-flash gotcha
 The RTC guard only self-corrects a board that lost power. For a board already holding
