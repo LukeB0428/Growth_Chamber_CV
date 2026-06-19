@@ -48,7 +48,7 @@ cells.append(md("## 0. Config — tweak these"))
 cells.append(code(
 """
 N_SYNTH_IMAGES = 1000      # synthetic training images to generate
-MIN_PODS, MAX_PODS = 10, 55
+MIN_PODS, MAX_PODS = 8, 30  # realistic separated-scan density (NOT dense clusters)
 VAL_FRAC = 0.15
 DOWNSCALE = 0.44           # shrink ~3500px scans toward training resolution
 SEED = 42
@@ -180,15 +180,19 @@ def transform(bgr, al, scale, angle):
 def mask_to_poly(m):
     cs,_ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cs: return None
-    c = max(cs, key=cv2.contourArea)
+    areas=[cv2.contourArea(c) for c in cs]
+    c = cs[int(np.argmax(areas))]
     if cv2.contourArea(c) < 80: return None
+    if sum(areas)>0 and cv2.contourArea(c)/sum(areas) < 0.85: return None  # fragmented -> drop
     eps = 0.004*cv2.arcLength(c, True)
     a = cv2.approxPolyDP(c, eps, True).reshape(-1,2)
     return a if len(a) >= 3 else None
 
-def compose(bg, sprites, rng, min_p, max_p, max_overlap=0.6):
+def compose(bg, sprites, rng, min_p, max_p, max_overlap=0.15):
+    # LOW overlap + visible-frac filter: real scans are separated pods; heavy
+    # overlap fragments masks and teaches the model to over-split single pods.
     H,W = bg.shape[:2]; canvas = bg.copy()
-    occ = np.zeros((H,W),np.uint8); placed=[]
+    occ = np.zeros((H,W),np.uint8); placed=[]; areas=[]
     for _ in range(rng.randint(min_p,max_p)):
         bgr,al = sprites[rng.randrange(len(sprites))]
         bgr,al = transform(bgr,al, rng.uniform(0.6,1.4), rng.uniform(0,360))
@@ -203,8 +207,12 @@ def compose(bg, sprites, rng, min_p, max_p, max_overlap=0.6):
         roi = canvas[y:y+ph,x:x+pw].astype(np.float32)
         canvas[y:y+ph,x:x+pw] = (a3*bgr.astype(np.float32)+(1-a3)*roi).astype(np.uint8)
         for pm in placed: pm[fm>0]=0
-        placed.append(fm); occ[fm>0]=255
-    polys=[p for m in placed if (p:=mask_to_poly(m)) is not None]
+        placed.append(fm); areas.append(area); occ[fm>0]=255
+    polys=[]
+    for m,oa in zip(placed,areas):
+        if oa==0 or int((m>0).sum())/oa < 0.80: continue  # too occluded -> fragment, drop
+        p=mask_to_poly(m)
+        if p is not None: polys.append(p)
     return canvas, polys
 
 def build_dataset(gt_root, out, n, min_p, max_p, val_frac, downscale, seed):

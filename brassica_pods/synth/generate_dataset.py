@@ -48,6 +48,13 @@ import numpy as np
 MIN_PASTED_AREA_PX = 80
 # Polygon simplification tolerance as a fraction of contour perimeter.
 POLY_EPS_FRAC = 0.004
+# A pasted pod must remain at least this fraction visible (after later pods
+# occlude it) to be emitted as a label — otherwise its mask is a partial/clipped
+# fragment, and training on fragments teaches the model to over-split pods.
+MIN_VISIBLE_FRAC = 0.80
+# The largest contour must dominate the mask this much, else it is fragmented
+# (split into pieces by an occluder) and is dropped rather than mislabelled.
+DOMINANT_CONTOUR_FRAC = 0.85
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,13 +66,14 @@ class SynthConfig:
     and overlap so the eval set's hard case (dense clusters) is represented."""
     num_images: int = 500
     min_pods: int = 8
-    max_pods: int = 60
+    max_pods: int = 30
     # Per-pod augmentation ranges.
     scale_range: tuple[float, float] = (0.6, 1.4)
     rotate_deg: tuple[float, float] = (0.0, 360.0)
-    # Allow heavy overlap to teach the model occluded clusters (0 = no overlap
-    # control, 1 = pods may fully stack). 0.6 ≈ realistic maturation crowding.
-    max_overlap: float = 0.6
+    # Max fraction of a new pod that may overlap existing pods. Keep LOW so pods
+    # stay separated like real laid-out scans — high overlap fragments masks and
+    # teaches the model to over-split single pods into several detections.
+    max_overlap: float = 0.15
     val_frac: float = 0.2
     seed: int = 42
     jitter_brightness: float = 0.15   # ± fractional brightness per pod
@@ -159,13 +167,18 @@ def _transform_sprite(sprite: _PodSprite, scale: float, angle: float,
 
 
 def _mask_to_polygon(mask: np.ndarray) -> Optional[np.ndarray]:
-    """Largest external contour of a binary mask -> simplified Nx2 polygon (px)."""
+    """Largest external contour of a binary mask -> simplified Nx2 polygon (px).
+    Returns None if the mask is fragmented (largest piece not dominant)."""
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
         return None
-    c = max(cnts, key=cv2.contourArea)
+    areas = [cv2.contourArea(c) for c in cnts]
+    c = cnts[int(np.argmax(areas))]
+    total = sum(areas)
     if cv2.contourArea(c) < MIN_PASTED_AREA_PX:
         return None
+    if total > 0 and cv2.contourArea(c) / total < DOMINANT_CONTOUR_FRAC:
+        return None        # split into pieces by an occluder -> drop, don't mislabel
     eps = POLY_EPS_FRAC * cv2.arcLength(c, True)
     approx = cv2.approxPolyDP(c, eps, True).reshape(-1, 2)
     return approx if len(approx) >= 3 else None
@@ -189,6 +202,7 @@ def compose_one(background: np.ndarray, sprites: list[_PodSprite],
 
     occupancy = np.zeros((H, W), dtype=np.uint8)   # union of placed pod masks
     placed_masks: list[np.ndarray] = []            # full-frame masks, paste order
+    placed_areas: list[int] = []                   # each pod's area at placement
 
     n_pods = rng.randint(cfg.min_pods, cfg.max_pods)
     for _ in range(n_pods):
@@ -230,10 +244,19 @@ def compose_one(background: np.ndarray, sprites: list[_PodSprite],
         for pm in placed_masks:
             pm[frame_mask > 0] = 0
         placed_masks.append(frame_mask)
+        placed_areas.append(area)
         occupancy[frame_mask > 0] = 255
 
-    polygons = [poly for m in placed_masks
-                if (poly := _mask_to_polygon(m)) is not None]
+    # Emit a label only for pods still mostly visible AND not fragmented — a
+    # heavily occluded or split mask becomes a partial example that teaches
+    # over-splitting.
+    polygons = []
+    for m, orig_area in zip(placed_masks, placed_areas):
+        if orig_area == 0 or int((m > 0).sum()) / orig_area < MIN_VISIBLE_FRAC:
+            continue
+        poly = _mask_to_polygon(m)
+        if poly is not None:
+            polygons.append(poly)
     return canvas, polygons
 
 
@@ -302,8 +325,8 @@ def _parse_args():
     ap.add_argument("--out", required=True)
     ap.add_argument("--num-images", type=int, default=500)
     ap.add_argument("--min-pods", type=int, default=8)
-    ap.add_argument("--max-pods", type=int, default=60)
-    ap.add_argument("--max-overlap", type=float, default=0.6)
+    ap.add_argument("--max-pods", type=int, default=30)
+    ap.add_argument("--max-overlap", type=float, default=0.15)
     ap.add_argument("--val-frac", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
     return ap.parse_args()
