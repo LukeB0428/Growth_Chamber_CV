@@ -112,3 +112,37 @@ create or replace view observations_unified as
       ('rtc_offset_sec',   c.rtc_offset_sec,   'seconds')
   ) as m(metric_name, value, units)
   where m.value is not null;
+
+-- ----------------------------------------------------------------------------
+-- Agent layer: alerts (deterministic floor) + agent_reports (scheduled LLM runs)
+-- ----------------------------------------------------------------------------
+create table if not exists alerts (
+  id            bigint generated always as identity primary key,
+  experiment_id text not null,
+  source        text not null,
+  rule_id       text not null,
+  severity      text not null,
+  status        text not null default 'open',   -- open | resolved
+  opened_at     timestamptz not null default now(),
+  resolved_at   timestamptz,
+  detail        text,
+  value         double precision
+);
+-- At most one OPEN alert per (experiment, source, rule); resolved history is unbounded.
+create unique index if not exists uniq_open_alert
+  on alerts (experiment_id, source, rule_id) where status = 'open';
+create index if not exists idx_alerts_open on alerts (status, opened_at);
+
+create table if not exists agent_reports (
+  id            bigint generated always as identity primary key,
+  experiment_id text not null,
+  created_at    timestamptz not null default now(),
+  kind          text not null,            -- check | report
+  status        text,                     -- nominal | attention | alert
+  summary       text,
+  detail        jsonb,                    -- the aggregate + any structured findings
+  used_llm      boolean not null default false,
+  tokens_in     integer,
+  tokens_out    integer
+);
+create index if not exists idx_reports_recent on agent_reports (created_at desc);

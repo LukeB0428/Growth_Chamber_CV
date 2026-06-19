@@ -90,6 +90,17 @@ fault_rules:
     severity: high
 
 # ----------------------------------------------------------------------------
+# Fault-floor parameters — the deterministic (no-LLM, no-token) evaluator reads these
+# ----------------------------------------------------------------------------
+fault_floor:
+  poll_seconds: 300          # cron cadence for fault_floor.py
+  lookback_min: 30           # window of rows fetched each run
+  sustain_min: 15            # a condition must hold this long before alerting
+  min_coverage_frac: 0.6     # require this fraction of expected rows in the sustain window
+  fire_frac: 0.9             # fraction of in-window rows meeting the condition to fire
+  sensor_sentinel: -7000     # firmware writes -7999 on sensor failure
+
+# ----------------------------------------------------------------------------
 # Phenotype targets — from config/species/arabidopsis.json (CV pipeline metrics)
 # ----------------------------------------------------------------------------
 phenotype_targets:
