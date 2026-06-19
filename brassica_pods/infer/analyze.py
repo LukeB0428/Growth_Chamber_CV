@@ -152,9 +152,12 @@ def _load_model(weights: str | Path):
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 # Drop detections smaller than this fraction of the median pod area — removes
-# the small "beak/tip" slivers the model detects as separate pods. Tuned on 12
-# hand-counted scans (MAE 8.4 -> 0.3); re-validate on a more diverse set.
-MIN_AREA_FRAC = 0.30
+# the small "beak/tip" slivers the model detects as separate pods.
+# 0.30 was near-perfect on 12 uniform ~20-pod scans (MAE 0.3) but UNDERcounts
+# denser/size-varied scans (a real 40-pod scan dropped to 20). 0.20 is the
+# robustness-hedged default: slightly higher error on uniform scans (MAE ~1.5)
+# but preserves real smaller pods. Re-tune on real-rig data, not deepcanola.
+MIN_AREA_FRAC = 0.20
 
 
 def analyze(image, scale: Optional[PixelScale] = None,
