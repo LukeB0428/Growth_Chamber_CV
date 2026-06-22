@@ -20,6 +20,7 @@ Run: python scripts/fault_floor.py            # single shot (for cron)
      python scripts/fault_floor.py --loop      # standalone loop
 """
 import argparse
+import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -196,7 +197,7 @@ def run_once(client, m, experiment_id, source):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="co2_controller_enriched")
-    ap.add_argument("--experiment-id", default="ee496_arabidopsis_round2")
+    ap.add_argument("--experiment-id", default=os.environ.get("EXPERIMENT_ID", "arabidopsis_co2"))
     ap.add_argument("--loop", action="store_true", help="run continuously instead of single-shot")
     args = ap.parse_args()
 

@@ -14,6 +14,7 @@ Run (point --logfile at the mounted SD or a scp'd copy):
   python scripts/sd_reconcile.py --logfile /mnt/sd/datalog.txt --source env_logger_control --role logging_only
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -26,7 +27,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--logfile", required=True, help="path to SD datalog.txt (mounted or copied)")
     ap.add_argument("--source", default="co2_controller_enriched")
-    ap.add_argument("--experiment-id", default="ee496_arabidopsis_round2")
+    ap.add_argument("--experiment-id", default=os.environ.get("EXPERIMENT_ID", "arabidopsis_co2"))
     ap.add_argument("--setpoint", type=float, default=1100.0,
                     help="manifest setpoint (SD log omits it)")
     ap.add_argument("--role", default="dosing", choices=["dosing", "logging_only"])

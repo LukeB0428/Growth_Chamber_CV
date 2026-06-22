@@ -39,7 +39,7 @@ a **powered USB hub** — fixes the port budget and the brownout at once.
 ```
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service-role-or-anon-key>
-EXPERIMENT_ID=ee496_arabidopsis_round2
+EXPERIMENT_ID=arabidopsis_co2
 ANTHROPIC_API_KEY=sk-ant-...        # only needed by agent_runner.py (not ingestion)
 ```
 

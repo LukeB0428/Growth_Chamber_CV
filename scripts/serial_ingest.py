@@ -53,7 +53,7 @@ def main():
     ap.add_argument("--baud", type=int, default=9600)  # matches firmware Serial.begin
     ap.add_argument("--source", help="override the source label (defaults per role)")
     ap.add_argument("--experiment-id",
-                    default=os.environ.get("EXPERIMENT_ID", "ee496_arabidopsis_round2"))
+                    default=os.environ.get("EXPERIMENT_ID", "arabidopsis_co2"))
     ap.add_argument("--batch", type=int, default=12,
                     help="rows to buffer before upsert (~1/min at 5s cadence)")
     args = ap.parse_args()

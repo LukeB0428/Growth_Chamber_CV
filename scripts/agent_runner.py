@@ -17,6 +17,7 @@ Run: python scripts/agent_runner.py --mode check
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -94,7 +95,7 @@ def main():
     ap.add_argument("--mode", required=True, choices=["check", "report"])
     ap.add_argument("--window-hours", type=int)
     ap.add_argument("--model")
-    ap.add_argument("--experiment-id", default="ee496_arabidopsis_round2")
+    ap.add_argument("--experiment-id", default=os.environ.get("EXPERIMENT_ID", "arabidopsis_co2"))
     ap.add_argument("--dry-run", action="store_true",
                     help="build the aggregate + decide the gate, print the prompt, but do not call the LLM or write")
     args = ap.parse_args()

@@ -16,6 +16,7 @@ Run: python scripts/agent_qa.py --question "Is the enriched chamber holding setp
 """
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -121,7 +122,7 @@ def answer(question, client, experiment_id, model=MODEL, max_iters=6):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--question")
-    ap.add_argument("--experiment-id", default="ee496_arabidopsis_round2")
+    ap.add_argument("--experiment-id", default=os.environ.get("EXPERIMENT_ID", "arabidopsis_co2"))
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--list-tools", action="store_true", help="print tool schemas and exit (no API)")
     args = ap.parse_args()
