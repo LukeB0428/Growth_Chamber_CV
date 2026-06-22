@@ -182,7 +182,7 @@ void setup()
   // battery backup, lost_power() is false and this guard will NOT correct it.
   // To force-set once: uncomment the unconditional line below, flash, confirm the
   // time on the CTRL serial line, then re-comment and re-flash.
-  if (!rtc.initialized() || rtc.lost_power()) {
+  if (!rtc.initialized() || rtc.lostPower()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
   rtc.start();

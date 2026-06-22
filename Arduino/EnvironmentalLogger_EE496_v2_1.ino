@@ -163,7 +163,7 @@ void setup()
   // ONE-TIME RECOVERY for a board already holding a wrong date with battery
   // backup: uncomment the unconditional line below, flash, confirm the time on the
   // ENV serial line, then re-comment and re-flash.
-  if (!rtc.initialized() || rtc.lost_power()) {
+  if (!rtc.initialized() || rtc.lostPower()) {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
   rtc.start();
