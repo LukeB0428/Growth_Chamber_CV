@@ -2226,16 +2226,6 @@ elif page == "Live Monitoring":
     st.plotly_chart(_line(_series('measured_co2_ppm', cutoff), '', 'CO₂ (ppm)', setpoint=SETPOINT_PPM),
                     use_container_width=True)
 
-    # ── Controller performance (enriched only) ──────────────────────────────────
-    st.markdown("<div class='section-title'>Controller — Duty & Error</div>", unsafe_allow_html=True)
-    dc1, dc2 = st.columns(2)
-    with dc1:
-        st.plotly_chart(_line(_series('duty_cycle', cutoff), 'Duty cycle (0–500)', 'duty'),
-                        use_container_width=True)
-    with dc2:
-        st.plotly_chart(_line(_series('error_ppm', cutoff), 'Error (setpoint − measured)', 'ppm'),
-                        use_container_width=True)
-
     # ── Environment ─────────────────────────────────────────────────────────────
     st.markdown("<div class='section-title'>Environment</div>", unsafe_allow_html=True)
     ec1, ec2 = st.columns(2)
