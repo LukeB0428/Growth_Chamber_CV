@@ -2180,18 +2180,39 @@ elif page == "Live Monitoring":
         fig.update_yaxes(title_text=ylabel)
         return apply_chart_style(fig, title)
 
+    # ── Current conditions — latest reading per chamber (big numbers) ───────────
+    @st.cache_data(ttl=30, show_spinner=False)
+    def _latest(metric, chamber):
+        rows = (_client.table("observations_unified").select("value")
+                .eq("metric_name", metric).eq("chamber", chamber)
+                .order("timestamp", desc=True).limit(1).execute().data)
+        return rows[0]["value"] if rows else None
+
+    st.markdown("<div class='section-title'>Current Conditions</div>", unsafe_allow_html=True)
+    cc_l, cc_r = st.columns(2)
+    for ccol, _chamber, _clabel in [(cc_l, 'enriched', 'Enriched'), (cc_r, 'control', 'Control')]:
+        with ccol:
+            st.markdown(f"**{_clabel} chamber**")
+            _mco2, _mtmp, _mhum = st.columns(3)
+            _co2 = _latest("measured_co2_ppm", _chamber)
+            _tmp = _latest("temp_c", _chamber)
+            _hum = _latest("humidity_pct", _chamber)
+            _mco2.metric("CO₂", f"{_co2:.0f} ppm" if _co2 is not None else "—")
+            _mtmp.metric("Temp", f"{_tmp:.1f} °C" if _tmp is not None else "—")
+            _mhum.metric("Humidity", f"{_hum:.0f} %" if _hum is not None else "—")
+
     # ── Health strip — are both loggers arriving, and not swapped? ──────────────
     st.markdown("<div class='section-title'>Logger Health</div>", unsafe_allow_html=True)
     health = _health(cutoff)
-    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now()
     hcols = st.columns(len(EXPECTED_SOURCES))
     for col, (src, label) in zip(hcols, EXPECTED_SOURCES.items()):
         rec = health.get(src)
         if not rec:
             col.metric(label, "NO DATA", delta="never seen", delta_color="inverse")
             continue
-        seen = pd.to_datetime(rec["timestamp"], utc=True)
-        age_s = (now_utc - seen.to_pydatetime()).total_seconds()
+        seen = pd.to_datetime(rec["timestamp"], utc=True).tz_localize(None)
+        age_s = (now_local - seen.to_pydatetime()).total_seconds()
         age_txt = (f"{int(age_s)}s ago" if age_s < 90 else
                    f"{int(age_s/60)}m ago" if age_s < 5400 else f"{int(age_s/3600)}h ago")
         offset = rec["value"]
@@ -2204,8 +2225,6 @@ elif page == "Live Monitoring":
     st.markdown("<div class='section-title'>CO₂ — Enriched vs Control</div>", unsafe_allow_html=True)
     st.plotly_chart(_line(_series('measured_co2_ppm', cutoff), '', 'CO₂ (ppm)', setpoint=SETPOINT_PPM),
                     use_container_width=True)
-    st.caption("Control CO₂ carries a −269 ppm firmware offset and is not cross-calibrated with the "
-               "enriched K30 — read the inter-chamber gap with the manifest caveat in mind.")
 
     # ── Controller performance (enriched only) ──────────────────────────────────
     st.markdown("<div class='section-title'>Controller — Duty & Error</div>", unsafe_allow_html=True)
@@ -2222,7 +2241,6 @@ elif page == "Live Monitoring":
     ec1, ec2 = st.columns(2)
     with ec1:
         st.plotly_chart(_line(_series('temp_c', cutoff), 'Temperature', '°C'), use_container_width=True)
-        st.caption("Inter-chamber temperature is NOT cross-calibrated (manifest caveat) — humidity is the reliable signal.")
     with ec2:
         st.plotly_chart(_line(_series('humidity_pct', cutoff), 'Humidity', '%'), use_container_width=True)
 
