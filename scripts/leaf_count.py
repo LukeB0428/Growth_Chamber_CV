@@ -39,6 +39,8 @@ MIN_LEAF_AREA_PX   = 300    # ignore masks smaller than this (noise)
 MAX_LEAF_AREA_FRAC = 0.40   # ignore masks covering >40% of image (background leakage)
 MIN_GREEN_FRAC     = 0.35   # mask must be ≥35% green pixels to count as a leaf
 
+SAM2_DEVICE = "cpu"         # override to "cuda" for GPU (e.g. eval_cvppp.py on Colab)
+
 # Watershed constants (fallback)
 WS_DIST_THRESHOLD  = 0.4
 WS_MIN_REGION_SIZE = 500
@@ -139,7 +141,7 @@ def _try_sam2(image, green_mask):
             checkpoint)
         print("Download complete.")
 
-    device    = "cpu"
+    device    = SAM2_DEVICE
     sam2      = build_sam2(cfg, checkpoint, device=device)
     predictor = SAM2ImagePredictor(sam2)
 
