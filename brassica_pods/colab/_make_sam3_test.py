@@ -40,7 +40,14 @@ on our real B. napus scans, vs our exhaustive hand-counts?
 - **Poor** (likely if the niche/fine-grained concept underperforms) → keep the trained YOLO-seg.
 
 **Setup:** Settings ▸ Accelerator ▸ **GPU**, Settings ▸ Internet ▸ **On**, then Run All.
-SAM 3 is ~3.45 GB and slow — GPU required. Needs Ultralytics ≥ 8.3.237."""))
+SAM 3 is ~3.45 GB and slow — GPU required. Needs Ultralytics ≥ 8.3.237.
+
+**⚠️ PREREQUISITE — SAM 3 weights are GATED:**
+1. On Hugging Face, **request access** at https://huggingface.co/facebook/sam3 and
+   wait for approval (can take minutes–hours).
+2. Create a token at https://huggingface.co/settings/tokens (read scope).
+3. In Kaggle: **Add-ons ▸ Secrets ▸ add a secret named `HF_TOKEN`** = that token.
+The weights cell below uses it to download `sam3.pt`."""))
 
 cells.append(md("## 1. Install + GPU check"))
 cells.append(code(
@@ -58,6 +65,39 @@ print("ultralytics", ultralytics.__version__)
 from packaging import version
 assert version.parse(ultralytics.__version__) >= version.parse("8.3.237"), "Need ultralytics >= 8.3.237 for SAM 3"
 """))
+
+cells.append(md(
+"""## 1b. Download the gated SAM 3 weights from Hugging Face
+Needs your approved access to `facebook/sam3` + an `HF_TOKEN` Kaggle secret (see
+prerequisite above). Lists the repo files first (the exact checkpoint name isn't
+public), then downloads the `.pt` and places it as `sam3.pt`."""))
+cells.append(code(
+'''
+import os, shutil
+from huggingface_hub import login, list_repo_files, hf_hub_download
+try:
+    from kaggle_secrets import UserSecretsClient
+    HF_TOKEN = UserSecretsClient().get_secret("HF_TOKEN")
+except Exception:
+    HF_TOKEN = ""          # fallback: paste your token here -> HF_TOKEN = "hf_..."
+assert HF_TOKEN, "Add a Kaggle secret named HF_TOKEN (Add-ons > Secrets)."
+login(token=HF_TOKEN)
+
+REPO = "facebook/sam3"
+files = list_repo_files(REPO)
+print("repo files:", files)
+pts = [f for f in files if f.endswith(".pt")]
+fname = "sam3.pt" if "sam3.pt" in files else (pts[0] if pts else None)
+assert fname, f"No .pt checkpoint found in {REPO}; pick from the list above."
+path = hf_hub_download(repo_id=REPO, filename=fname)
+shutil.copy(path, "sam3.pt")
+print(f"downloaded {fname} -> sam3.pt ({os.path.getsize('sam3.pt')/1e9:.2f} GB)")
+# also grab a BPE vocab if the repo ships one (needed for text prompts)
+for f in files:
+    if "vocab" in f.lower() and f.endswith((".gz", ".txt")):
+        shutil.copy(hf_hub_download(repo_id=REPO, filename=f), os.path.basename(f))
+        print("fetched vocab:", f)
+'''))
 
 cells.append(md("## 2. Hand-count ground truth (the 12 scans you counted)"))
 cells.append(code(
