@@ -135,34 +135,67 @@ class BarleyStageDetector(BaseStageDetector):
 
 class BrassicaStageDetector(BaseStageDetector):
     """
-    Skeleton for Brassica napus / rapa — calibration target Q1 2027 (Graciet's trial).
+    Brassica napus / rapa — full BBCH lifecycle tracker.
 
-    Stages beyond vegetative require:
-      - flowering: yellow flower detection (H ~25-35 HSV) — needs flower_detection.py
-      - pod_fill:  silique detection — needs pod_detection.py
+    Ladder: dormant → germination → seedling → vegetative → bolting →
+            flowering → pod_fill → senescence
 
-    Brassica bolting_flag fires before flowers open, so it serves as a proxy
-    for the bolting→flowering transition until flower_detection.py is built.
-    Confidence is deliberately low (≤ 0.6) to flag these as estimates.
+    Signals (per day; history from pot_metrics.csv):
+      canopy_cover_%   — growth proxy (germination → vegetative; senescence drop)
+      bolting_flag     — bolting onset (BBCH 51), before petals open
+      flower_area_pct  — REAL yellow-flower coverage (flower_metrics.py); drives
+                         flowering (BBCH 61) and, once it declines, pod_fill (71)
+      germination_flag — first green pixels
+
+    Phenology is monotonic: `ever_*` history flags stop the stage reverting (e.g.
+    a low-flower day mid-flowering does not drop back to bolting). pod_fill is an
+    RGB heuristic (flowered, then flowering sustained-declined → siliques forming),
+    so its confidence is low until the pod model validates it.
     """
 
     def detect(self, current_metrics: dict, history_rows: list) -> DevelopmentalStage:
+        t = self.thresholds
         cover = float(current_metrics.get('canopy_cover_%') or 0.0)
-        bolt  = int(current_metrics.get('bolting_flag')     or 0)
-        t     = self.thresholds
+        bolt  = int(current_metrics.get('bolting_flag') or 0)
+        germ  = int(current_metrics.get('germination_flag') or 0)
+        flower = float(current_metrics.get('flower_area_pct',
+                                           current_metrics.get('flowering_pct')) or 0.0)
 
-        if bolt:
-            prev_bolt_days = sum(1 for r in history_rows if int(r.get('bolting_flag') or 0) == 1)
-            if prev_bolt_days >= 3:
-                return self._stage('flowering', confidence=0.5)
-            return self._stage('bolting', confidence=0.6)
+        flower_th = float(t.get('flowering_yellow_pixel_pct', 2.0))
+        hist_cover  = [float(r.get('canopy_cover_%') or 0.0) for r in history_rows]
+        hist_flower = [float(r.get('flower_area_pct') or 0.0) for r in history_rows]
+        ever_bolted  = bolt == 1 or any(int(r.get('bolting_flag') or 0) == 1 for r in history_rows)
+        ever_flowered = flower >= flower_th or any(f >= flower_th for f in hist_flower)
 
-        if cover >= float(t.get('vegetative_cover_pct', 5.0)):
-            return self._stage('vegetative', confidence=0.6)
+        # 1. Senescence — sustained canopy drop from peak (post-reproductive decline).
+        min_days = int(t.get('senescence_min_days', 5))
+        all_cover = hist_cover + [cover]
+        if len(all_cover) >= min_days:
+            peak = max(all_cover)
+            if peak > float(t.get('vegetative_cover_pct', 12.0)):
+                drop = peak * (1.0 - float(t.get('senescence_cover_drop_pct', 35.0)) / 100.0)
+                if all(v < drop for v in all_cover[-min_days:]):
+                    return self._stage('senescence', confidence=0.85)
+
+        # 2. Reproductive ladder (monotonic via ever_* flags).
+        if ever_flowered:
+            pod_min = int(t.get('pod_fill_min_days', 3))
+            recent = hist_flower[-(pod_min - 1):] if pod_min > 1 else []
+            declined = flower < flower_th and all(f < flower_th for f in recent) \
+                and len(recent) >= pod_min - 1
+            if declined:                                    # flowers shed -> siliques
+                return self._stage('pod_fill', confidence=0.5)
+            return self._stage('flowering', confidence=0.8)
+        if bolt or ever_bolted:
+            return self._stage('bolting', confidence=0.7)
+
+        # 3. Vegetative ladder (cover thresholds).
+        if cover >= float(t.get('vegetative_cover_pct', 12.0)):
+            return self._stage('vegetative', confidence=0.8)
         if cover >= float(t.get('seedling_cover_pct', 1.5)):
-            return self._stage('seedling', confidence=0.7)
-        if cover >= float(t.get('germination_cover_pct', 0.5)):
-            return self._stage('germination', confidence=0.7)
+            return self._stage('seedling', confidence=0.75)
+        if cover >= float(t.get('germination_cover_pct', 0.5)) or germ:
+            return self._stage('germination', confidence=0.75)
         return self._stage('dormant', confidence=0.9)
 
 
