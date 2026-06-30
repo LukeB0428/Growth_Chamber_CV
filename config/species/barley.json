@@ -86,5 +86,27 @@
       "senescence_min_days": 5,
       "_cover_sources": "Marchetti 2019 Table: BBCH 00-09=0-2%, 10-19=2-25%, 20-29=25-60%, 30-39=60-80%, 40-49=80-85% plateau. stem_extension_cover_pct not yet wired in detector — add in Q4 2026 update."
     }
+  },
+
+  "object_count": {
+    "target": "spike",
+    "engine": "phenotyping.object_count",
+    "weights": "phenotyping/weights/barley_spike.pt",
+    "warm_start": "GWHD-pretrained cereal-head detector (yolo11s, imgsz 1024); fine-tune on barley Q4 2026",
+    "conf": 0.25,
+    "imgsz": 1024,
+    "min_area_frac": 0.0,
+    "dedup": false,
+    "view": "top_down",
+    "_status": "SCAFFOLD — until a barley fine-tune exists, run the GWHD warm-start weights. Spike count is the headline yield trait (analog of brassica pod count). Detection path of the shared engine; YOLO already NMS-dedups so dedup=false."
+  },
+
+  "imaging": {
+    "views": ["top_down", "side"],
+    "traits_by_view": {
+      "top_down": ["spike_count", "canopy_cover", "greenness", "senescence"],
+      "side": ["plant_height", "tiller_count"]
+    },
+    "_note": "Multi-view per Luke 2026-06. Top-down counts spikes (UAV-style nadir) on the existing OAK-D; side adds height/tillering. A registered top+side pair is the 3DGS on-ramp later."
   }
 }
