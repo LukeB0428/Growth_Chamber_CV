@@ -1,0 +1,12 @@
+# Development / CI dependencies (test harness).
+# Install: pip install -r requirements-dev.txt
+# The runtime deps are in requirements.txt; these are only needed to run tests.
+pytest>=8.0
+
+# Minimal runtime subset the tests import (headless OpenCV — no display on CI).
+numpy
+pandas
+scipy
+matplotlib
+opencv-python-headless
+pyyaml

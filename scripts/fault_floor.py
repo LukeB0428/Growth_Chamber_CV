@@ -12,6 +12,8 @@ Rules (numeric params come from the manifest, so behaviour is portable):
   dosing_undershoot : in the dosing window, measured_co2 < setpoint - tolerance, sustained
   duty_pinned_high  : duty_cycle pinned at the max, sustained, while dosing
   sensor_dropout    : measured_co2 <= 0 or temp_c <= sentinel (instantaneous)
+  feed_silent       : newest tick older than stale_after_min, or no rows at all
+                      (dead sensor / crashed ingest — the total-silence fault)
 
 evaluate_rules() is a PURE function (rows in, findings out) so it unit-tests offline.
 
@@ -66,13 +68,22 @@ def build_params(m):
         "period_s":      float(m.get("cadence", {}).get("serial_live_sec", 5)),
         "lookback_min":  float(ff.get("lookback_min", 30)),
         "poll_seconds":  float(ff.get("poll_seconds", 300)),
+        "stale_after_min": float(ff.get("stale_after_min", 10)),
     }
 
 
-def evaluate_rules(rows, params, now):
+def evaluate_rules(rows, params, now, now_local=None):
     """Pure evaluator. rows: list of control_telemetry dicts. Returns
     (findings, meta) where findings is one dict per rule with a 'firing' bool —
-    non-firing rules are included so the caller can resolve cleared alerts."""
+    non-firing rules are included so the caller can resolve cleared alerts.
+
+    `now` is real UTC (used for the sustain window). `now_local` is host-local
+    wall clock (naive); it is the correct basis for the freshness check because
+    rtc_timestamp is host-local time cosmetically tagged +00:00 (see
+    observations_db._rtc_fields), so comparing it to real UTC would be off by
+    the host's UTC offset. Defaults to `now` stripped of tz if not supplied."""
+    if now_local is None:
+        now_local = now.replace(tzinfo=None)
     rows = sorted(rows, key=lambda r: r["rtc_timestamp"])
     sustain_start = now - timedelta(minutes=params["sustain_min"])
     win = [r for r in rows if _parse_ts(r["rtc_timestamp"]) >= sustain_start]
@@ -129,15 +140,48 @@ def evaluate_rules(rows, params, now):
         "detail": "sensor returned a dropout sentinel on recent ticks" if bad else "",
     })
 
-    # Precedence: a firing sensor_dropout makes CO2/duty assessment meaningless,
-    # so suppress those rules while the sensor is bad (one root cause, one alert).
-    if findings[-1]["rule_id"] == "sensor_dropout" and findings[-1]["firing"]:
-        for f in findings[:-1]:
-            if f["firing"]:
+    # 4) feed_silent — data freshness. None of the rules above fire on TOTAL
+    #    silence: an empty window makes have_dosing False, and sensor_dropout
+    #    only inspects rows[-3:], which are stale (or absent) when the feed has
+    #    died. A dead sensor / crashed ingest is exactly the fault the never-miss
+    #    floor most needs to catch, so this rule owns it. Age is measured in the
+    #    host-local basis (see docstring) to avoid a UTC-offset error.
+    stale_after = params["stale_after_min"]
+    if rows:
+        latest_naive = _parse_ts(rows[-1]["rtc_timestamp"]).replace(tzinfo=None)
+        age_min = (now_local - latest_naive).total_seconds() / 60.0
+    else:
+        age_min = float("inf")
+    silent = age_min > stale_after
+    if not rows:
+        silent_detail = f"no telemetry in the {params['lookback_min']:.0f}-min lookback window"
+    elif silent:
+        silent_detail = f"no telemetry for {age_min:.0f} min (stale after {stale_after:.0f} min)"
+    else:
+        silent_detail = ""
+    findings.append({
+        "rule_id": "feed_silent", "firing": silent, "severity": "high",
+        "value": None if age_min == float("inf") else round(age_min, 1),
+        "detail": silent_detail,
+    })
+
+    # Precedence (one root cause → one alert):
+    #  - a silent feed makes EVERY other assessment meaningless → suppress all;
+    #  - otherwise a firing sensor_dropout makes CO2/duty assessment meaningless.
+    by_id = {f["rule_id"]: f for f in findings}
+    if by_id["feed_silent"]["firing"]:
+        for f in findings:
+            if f["rule_id"] != "feed_silent" and f["firing"]:
+                f["firing"] = False
+                f["detail"] = "suppressed: feed silent"
+    elif by_id["sensor_dropout"]["firing"]:
+        for f in findings:
+            if f["rule_id"] not in ("sensor_dropout", "feed_silent") and f["firing"]:
                 f["firing"] = False
                 f["detail"] = "suppressed: sensor dropout active"
 
-    meta = {"n_rows": len(rows), "n_window": len(win), "expected_window": expected}
+    meta = {"n_rows": len(rows), "n_window": len(win), "expected_window": expected,
+            "latest_age_min": None if age_min == float("inf") else round(age_min, 1)}
     return findings, meta
 
 
@@ -178,13 +222,14 @@ def _log_local(now, source, firing, opened, resolved, meta, error=None):
 def run_once(client, m, experiment_id, source):
     params = build_params(m)
     now = datetime.now(timezone.utc)
+    now_local = datetime.now()  # host-local wall clock — basis for the freshness check
     cutoff = (now - timedelta(minutes=params["lookback_min"])).isoformat()
     try:
         rows = (client.table("control_telemetry")
                 .select("rtc_timestamp,measured_co2_ppm,duty_cycle,control_state,temp_c,setpoint_ppm")
                 .eq("source", source).gte("rtc_timestamp", cutoff)
                 .order("rtc_timestamp").limit(5000).execute().data)
-        findings, meta = evaluate_rules(rows, params, now)
+        findings, meta = evaluate_rules(rows, params, now, now_local)
         opened, resolved = sync_alerts(client, experiment_id, source, findings, now)
         firing = [f["rule_id"] for f in findings if f["firing"]]
         _log_local(now, source, firing, opened, resolved, meta)

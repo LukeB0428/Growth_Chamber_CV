@@ -99,6 +99,7 @@ fault_floor:
   min_coverage_frac: 0.6     # require this fraction of expected rows in the sustain window
   fire_frac: 0.9             # fraction of in-window rows meeting the condition to fire
   sensor_sentinel: -7000     # firmware writes -7999 on sensor failure
+  stale_after_min: 10        # feed_silent fires if newest tick is older than this (dead feed / crashed ingest)
 
 # ----------------------------------------------------------------------------
 # Phenotype targets — from config/species/arabidopsis.json (CV pipeline metrics)

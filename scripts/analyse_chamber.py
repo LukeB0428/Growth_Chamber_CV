@@ -516,7 +516,8 @@ def analyse_pot(image, depth_map, pot, chamber_id, image_path, method="hsv",
         try:
             from health_metrics import compute_health_metrics
             health         = compute_health_metrics(
-                pot_image, green_mask, chamber_id, image_path, depth_map
+                pot_image, green_mask, chamber_id, image_path, depth_map,
+                roi_area_px=pot_area_px,
             )
             chlorosis_pct  = health['chlorosis_pct']
             necrosis_pct   = health['necrosis_pct']

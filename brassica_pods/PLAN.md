@@ -71,10 +71,22 @@ Not built (gated): station detector (needs real images), the rig, live capture I
 5. **Resourcing vs ambition** — solo build, weak sensor, vs a research-grade problem.
 
 ## 6. Immediate next steps
-1. **When `pods_best.pt` lands:** run the eval on the deepcanola novel set (no
-   labelling) → first real numbers + TasselNet decision.
-2. **When podding plants exist:** run the **feasibility probe** → GO/MARGINAL/NO-GO.
-3. Get the **Diarmuid answers** below — several gate the whole approach.
+
+**NEXT WEEK (the binding constraint is now physical, not code):**
+1. **Email + arrange a meeting with Diarmuid.** Ask the §7 questions (the 3 key
+   ones at minimum: bushiness, accuracy target, maturity stage).
+2. **At the meeting, get access to podding plants** so we can run the feasibility
+   probe — the make-or-break experiment for the intact-plant station.
+3. **Run the feasibility probe** ([PROBE.md](PROBE.md)) on those plants →
+   GO/MARGINAL/NO-GO. This decides whether the station product is even possible.
+
+**Done / parked:**
+- Spread-count model trained + validated against true hand-counts (~98% on uniform
+  ~20-pod scans; dedup + size filter in `analyze()`). **Parked as a proven proxy**
+  — re-tune on real-rig data, not deepcanola. Robustness gap on dense scans is a
+  known limitation (needs retrain on real data, not threshold tuning).
+- The software is as far as proxy data allows. Further model work waits on
+  real-rig captures.
 
 ---
 

@@ -219,7 +219,7 @@ def compute_symmetry(green_mask):
 # 5. LEAF AREA INDEX (STUB)
 # ─────────────────────────────────────────────
 
-def compute_lai(green_mask, depth_map=None):
+def compute_lai(green_mask, depth_map=None, roi_area_px=None):
     """
     Leaf Area Index using Beer-Lambert approximation with optional depth correction (Stage 4).
 
@@ -235,14 +235,21 @@ def compute_lai(green_mask, depth_map=None):
         Correction saturates at LAI * 2 for very tall canopies.
 
     Args:
-        green_mask : binary uint8 canopy mask (1920x1080)
-        depth_map  : uint16 depth array (640x400, mm), or None
+        green_mask  : binary uint8 canopy mask (1920x1080)
+        depth_map   : uint16 depth array (640x400, mm), or None
+        roi_area_px : denominator for canopy fraction. MUST be the analysis
+                      region's pixel count. In per-pot mode green_mask is a
+                      full-frame array with only the pot circle populated, so
+                      using green_mask.size would divide by ~2M px instead of
+                      the ~34k-px pot and understate LAI ~60x. Pass the pot area
+                      here. Defaults to green_mask.size for whole-chamber use.
 
     Returns:
         lai: float — estimated leaf area index, rounded to 4 dp
     """
     k = 0.5
-    canopy_fraction = min(float(np.sum(green_mask > 0)) / green_mask.size, 0.999)
+    denom = roi_area_px if roi_area_px else green_mask.size
+    canopy_fraction = min(float(np.sum(green_mask > 0)) / denom, 0.999)
     lai_bl = -np.log(1.0 - canopy_fraction) / k
 
     if depth_map is None:
@@ -320,16 +327,19 @@ def save_health_visualisation(image, green_mask, chlorosis_mask, necrosis_mask,
 # MAIN FUNCTION — called from analyse_image.py
 # ─────────────────────────────────────────────
 
-def compute_health_metrics(image_bgr, green_mask, chamber_id, image_path, depth_map=None):
+def compute_health_metrics(image_bgr, green_mask, chamber_id, image_path, depth_map=None,
+                           roi_area_px=None):
     """
     Runs all health metric computations on a single image.
 
     Args:
-        image_bgr  : BGR image as loaded by OpenCV
-        green_mask : binary canopy mask (0 or 255) from HSV or model
-        chamber_id : 'enriched' or 'control'
-        image_path : original image path (used for naming visualisation)
-        depth_map  : uint16 depth array (640x400, mm) from OAK-D Lite, or None (Stage 4)
+        image_bgr   : BGR image as loaded by OpenCV
+        green_mask  : binary canopy mask (0 or 255) from HSV or model
+        chamber_id  : 'enriched' or 'control'
+        image_path  : original image path (used for naming visualisation)
+        depth_map   : uint16 depth array (640x400, mm) from OAK-D Lite, or None (Stage 4)
+        roi_area_px : analysis-region pixel count for LAI; pass the pot area in
+                      per-pot mode (see compute_lai). None → whole-frame.
 
     Returns:
         dict with keys: chlorosis_pct, necrosis_pct, curl_score,
@@ -339,7 +349,7 @@ def compute_health_metrics(image_bgr, green_mask, chamber_id, image_path, depth_
     necrosis_pct,   necrosis_mask   = detect_necrosis(image_bgr, green_mask)
     curl_score                       = compute_leaf_curl(green_mask)
     symmetry_score                   = compute_symmetry(green_mask)
-    lai                              = compute_lai(green_mask, depth_map)
+    lai                              = compute_lai(green_mask, depth_map, roi_area_px)
 
     save_health_visualisation(
         image_bgr, green_mask, chlorosis_mask, necrosis_mask,

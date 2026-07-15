@@ -1985,21 +1985,29 @@ elif page == "Statistics":
                 if p < 0.05:  return '*'
                 return 'ns'
 
-            stats_df['significance'] = stats_df['p_value'].apply(sig_stars)
+            # FDR-adjusted p drives significance; fall back to raw p on older CSVs
+            p_col = 'p_value_adj' if 'p_value_adj' in stats_df.columns else 'p_value'
+            eff_col = 'cliffs_delta' if 'cliffs_delta' in stats_df.columns else 'cohens_d'
+            eff_label = "Cliff's δ" if eff_col == 'cliffs_delta' else "Cohen's d"
+
+            stats_df['significance'] = stats_df[p_col].apply(sig_stars)
             stats_df['significant']  = stats_df['significant'].map({True: '✓', False: '✗'})
 
-            display_cols = ['metric', 'mean_enriched', 'mean_control', 'p_value',
-                            'significance', 'cohens_d', 'effect_size']
+            display_cols = ['metric', 'n_enriched', 'mean_enriched', 'mean_control',
+                            p_col, 'significance', eff_col, 'effect_size']
             st.dataframe(
                 stats_df[display_cols].rename(columns={
-                    'metric': 'Metric', 'mean_enriched': 'Mean Enriched',
-                    'mean_control': 'Mean Control', 'p_value': 'p-value',
-                    'significance': 'Sig.', 'cohens_d': "Cohen's d",
+                    'metric': 'Metric', 'n_enriched': 'n / chamber',
+                    'mean_enriched': 'Mean Enriched',
+                    'mean_control': 'Mean Control', p_col: 'p (FDR-adj)',
+                    'significance': 'Sig.', eff_col: eff_label,
                     'effect_size': 'Effect Size',
                 }),
                 use_container_width=True, hide_index=True,
             )
-            st.caption("Significance: *** p<0.001 | ** p<0.01 | * p<0.05 | ns = not significant. Mann-Whitney U test (two-sided).")
+            st.caption("Pot-level Mann-Whitney U (two-sided); pots aggregated to one mean each (n≤8 per chamber). "
+                       "p is Benjamini-Hochberg FDR-adjusted: *** <0.001 | ** <0.01 | * <0.05 | ns. "
+                       "Note: one chamber per treatment, so pots are sub-samples — results describe this chamber pair, not a replicated CO₂ effect.")
         else:
             st.info("No statistics yet — click 'Run Statistical Analysis' above.")
     else:
@@ -2136,7 +2144,7 @@ elif page == "Live Monitoring":
     hours, rule = {
         "Last 6 hours":  (6,   "1min"),
         "Last 24 hours": (24,  "5min"),
-        "Last 7 days":   (168, "1H"),
+        "Last 7 days":   (168, "1h"),
     }[win]
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 

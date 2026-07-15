@@ -3,17 +3,36 @@ statistical_comparison.py — Enriched vs Control Statistical Comparison
 EE496 | Luke Buckley | Maynooth University
 
 Compares CV metrics between enriched (elevated CO2) and control (ambient CO2)
-chambers using daily mean values per chamber.
+chambers. The experimental UNIT is the pot: pot-day rows are collapsed to one
+mean per pot (8 pots per chamber) before any test is run. This removes the
+day-to-day temporal autocorrelation that would otherwise treat ~47 repeated
+measures of the same 8 pots as independent samples — which inflates n and
+badly understates p-values (pseudoreplication).
 
 Statistical tests:
-  - Mann-Whitney U test (non-parametric, appropriate for small samples)
-  - Effect size: Cohen's d
+  - Mann-Whitney U test (non-parametric), pot-level, two-sided
+  - Effect size: Cliff's delta (rank-based — consistent with Mann-Whitney;
+    replaces the parametric Cohen's d used previously)
+  - Multiple metrics are corrected with Benjamini-Hochberg (FDR). The
+    `significant` flag reflects the FDR-ADJUSTED p-value, not the raw one.
+  - Reported both overall and per developmental stage.
 
+CAVEAT — design-level pseudoreplication (read before quoting a p-value):
+  CO2 is applied at the CHAMBER level and there is only ONE chamber per
+  treatment, so the 8 pots are sub-samples, not true independent replicates of
+  the CO2 effect. Pot-level tests describe THIS enriched-vs-control chamber
+  pair; formal causal inference to "elevated CO2 causes X" would require
+  chamber-level replication. The per-stage windows below are DESCRIPTIVE
+  developmental phases (chosen from the observed greenness curve), so per-stage
+  results are EXPLORATORY, not confirmatory.
+
+Outputs (saved to results/):
+  - stats_summary.csv         — overall pot-level test results (FDR-adjusted)
+  - stats_by_stage.csv        — same tests within each developmental stage
 Outputs (saved to results/plots/):
   - growth_curves.png         — canopy cover over time with 95% CI shading
   - vegetation_indices.png    — NGRDI, VARI, EXG over time
   - rgr_comparison.png        — relative growth rate comparison
-  - stats_summary.csv         — statistical test results table
 
 Usage:
     python statistical_comparison.py
@@ -21,6 +40,7 @@ Usage:
 """
 
 import argparse
+import sys
 import warnings
 import numpy as np
 import pandas as pd
@@ -29,14 +49,38 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from scipy import stats as scipy_stats
+from scipy.stats import false_discovery_control
 from pathlib import Path
 
 warnings.filterwarnings('ignore')
+
+# Windows consoles default to cp1252 and choke on the unicode used below
+# (≤, —, δ). Force UTF-8 so console + captured-subprocess output never crash.
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 
 from config import POT_METRICS_CSV, RESULTS_DIR
 
 PLOTS_DIR = RESULTS_DIR / 'plots'
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Analysis parameters ──────────────────────────────────────────────────────
+# Pot is the unit of replication → at most 8 values per chamber. Mann-Whitney U
+# on 8-vs-8 can reach p<0.05; on 4-vs-4 the smallest attainable two-sided p is
+# ~0.028, and on 3-vs-3 it is ~0.10 (can NEVER be significant). Require at least
+# this many pots per chamber so a test is not run when it cannot be meaningful.
+MIN_POTS = 5
+
+# Descriptive developmental windows from the project README (greenness phases).
+# These are POST-HOC / exploratory boundaries — see the caveat in the docstring.
+STAGES = [
+    ('Stage 1', '2026-04-09', '2026-04-20'),
+    ('Stage 2', '2026-04-21', '2026-05-12'),
+    ('Stage 3', '2026-05-13', '2026-06-01'),
+]
 
 # ── Plot style ─────────────────────────────────────────────────────────────────
 ENRICHED_COLOUR = '#4CAF50'   # green
@@ -96,53 +140,95 @@ def daily_stats(df, metric):
 
 # ── Statistical tests ──────────────────────────────────────────────────────────
 
-def cohens_d(a, b):
-    """Compute Cohen's d effect size."""
-    na, nb = len(a), len(b)
-    if na < 2 or nb < 2:
+RESULT_COLS = ['metric', 'n_enriched', 'n_control', 'mean_enriched', 'mean_control',
+               'U_stat', 'p_value', 'p_value_adj', 'significant',
+               'cliffs_delta', 'effect_size']
+
+
+def aggregate_per_pot(df, metric, start=None, end=None):
+    """Collapse pot-day rows to ONE mean per pot (the experimental unit),
+    optionally within a [start, end] date window. Returns (enriched, control)
+    arrays of per-pot means — this is what makes the test valid (removes the
+    pot-day temporal autocorrelation that inflates n)."""
+    sub = df
+    if start is not None:
+        sub = sub[pd.to_datetime(sub['date']) >= pd.to_datetime(start)]
+    if end is not None:
+        sub = sub[pd.to_datetime(sub['date']) <= pd.to_datetime(end)]
+
+    per_pot = (sub.dropna(subset=[metric])
+                  .groupby(['chamber', 'pot_label'])[metric]
+                  .mean())
+    chambers = per_pot.index.get_level_values(0)
+    enriched = per_pot[chambers == 'enriched'].to_numpy()
+    control  = per_pot[chambers == 'control'].to_numpy()
+    return enriched, control
+
+
+def cliffs_delta(a, b):
+    """Cliff's delta — rank-based effect size that matches Mann-Whitney U.
+    Range [-1, 1]: fraction of (a>b) pairs minus fraction of (a<b) pairs."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    if len(a) < 1 or len(b) < 1:
         return np.nan
-    pooled_std = np.sqrt(((na - 1) * np.std(a, ddof=1)**2 +
-                          (nb - 1) * np.std(b, ddof=1)**2) / (na + nb - 2))
-    if pooled_std == 0:
-        return 0.0
-    return (np.mean(a) - np.mean(b)) / pooled_std
+    return float(np.sign(a[:, None] - b[None, :]).mean())
 
 
-def run_stats(df, metric):
-    """Run Mann-Whitney U test between enriched and control for a metric."""
-    enriched = df[df['chamber'] == 'enriched'][metric].dropna()
-    control  = df[df['chamber'] == 'control'][metric].dropna()
+def cliffs_magnitude(delta):
+    """Romano et al. (2006) thresholds for |Cliff's delta|."""
+    if delta is None or np.isnan(delta):
+        return 'insufficient data'
+    ad = abs(delta)
+    if ad < 0.147:
+        return 'negligible'
+    if ad < 0.33:
+        return 'small'
+    if ad < 0.474:
+        return 'medium'
+    return 'large'
 
-    if len(enriched) < 3 or len(control) < 3:
-        return {'metric': metric, 'n_enriched': len(enriched), 'n_control': len(control),
-                'mean_enriched': np.nan, 'mean_control': np.nan,
-                'U_stat': np.nan, 'p_value': np.nan, 'significant': False,
-                'cohens_d': np.nan, 'effect_size': 'insufficient data'}
+
+def run_stats(df, metric, start=None, end=None):
+    """Mann-Whitney U between enriched and control on PER-POT aggregated values.
+    `significant` is filled in later by apply_fdr() from the adjusted p-value."""
+    enriched, control = aggregate_per_pot(df, metric, start, end)
+    n_e, n_c = len(enriched), len(control)
+
+    row = {'metric': metric, 'n_enriched': n_e, 'n_control': n_c,
+           'mean_enriched': np.nan, 'mean_control': np.nan,
+           'U_stat': np.nan, 'p_value': np.nan, 'p_value_adj': np.nan,
+           'significant': False, 'cliffs_delta': np.nan,
+           'effect_size': 'insufficient data'}
+
+    if n_e < MIN_POTS or n_c < MIN_POTS:
+        return row
 
     u_stat, p_val = scipy_stats.mannwhitneyu(enriched, control, alternative='two-sided')
-    d = cohens_d(enriched.values, control.values)
-
-    if abs(d) < 0.2:
-        effect = 'negligible'
-    elif abs(d) < 0.5:
-        effect = 'small'
-    elif abs(d) < 0.8:
-        effect = 'medium'
-    else:
-        effect = 'large'
-
-    return {
-        'metric':        metric,
-        'n_enriched':    len(enriched),
-        'n_control':     len(control),
-        'mean_enriched': round(float(enriched.mean()), 4),
-        'mean_control':  round(float(control.mean()), 4),
+    delta = cliffs_delta(enriched, control)
+    row.update({
+        'mean_enriched': round(float(np.mean(enriched)), 4),
+        'mean_control':  round(float(np.mean(control)), 4),
         'U_stat':        round(float(u_stat), 2),
         'p_value':       round(float(p_val), 4),
-        'significant':   p_val < 0.05,
-        'cohens_d':      round(float(d), 3),
-        'effect_size':   effect,
-    }
+        'cliffs_delta':  round(float(delta), 3),
+        'effect_size':   cliffs_magnitude(delta),
+    })
+    return row
+
+
+def apply_fdr(results, alpha=0.05):
+    """Benjamini-Hochberg across the metric family. Sets p_value_adj and the
+    `significant` flag from the ADJUSTED p. Metrics with no p (insufficient
+    pots) are excluded from the correction and stay non-significant."""
+    idx = [i for i, r in enumerate(results) if r['p_value'] is not None and not np.isnan(r['p_value'])]
+    if idx:
+        pv  = np.array([results[i]['p_value'] for i in idx], dtype=float)
+        adj = false_discovery_control(pv, method='bh')
+        for j, i in enumerate(idx):
+            results[i]['p_value_adj'] = round(float(adj[j]), 4)
+            results[i]['significant'] = bool(adj[j] < alpha)
+    return results
 
 
 # ── Plotting helpers ───────────────────────────────────────────────────────────
@@ -176,13 +262,14 @@ def plot_metric_over_time(df, metric, title, ylabel, filename, stats_row=None):
                         sub['mean'] + sub['ci95'],
                         color=colour, alpha=ALPHA_FILL)
 
-    # Annotate with stats if provided
-    if stats_row is not None:
-        p = stats_row['p_value']
-        d = stats_row['cohens_d']
+    # Annotate with the overall pot-level stat if provided
+    if stats_row is not None and not pd.isna(stats_row.get('p_value_adj')):
+        p = stats_row['p_value_adj']
+        d = stats_row['cliffs_delta']
         sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
         ax.text(0.02, 0.97,
-                f"Mann-Whitney U  p={p:.3f} {sig}\nCohen's d={d:.2f} ({stats_row['effect_size']})",
+                f"Mann-Whitney U (per pot)  p(FDR)={p:.3f} {sig}\n"
+                f"Cliff's δ={d:.2f} ({stats_row['effect_size']})",
                 transform=ax.transAxes, va='top', fontsize=8,
                 color='#cccccc',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='#1a2e1a', edgecolor='#4CAF50', alpha=0.8))
@@ -222,10 +309,10 @@ def plot_vegetation_indices(df, stats_dict):
                             color=colour, alpha=ALPHA_FILL)
 
         sr = stats_dict.get(metric)
-        if sr:
-            p   = sr['p_value']
+        if sr and not pd.isna(sr.get('p_value_adj')):
+            p   = sr['p_value_adj']
             sig = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
-            ax.set_title(f"{label}  (p={p:.3f} {sig})", color='#4CAF50', pad=8)
+            ax.set_title(f"{label}  (p(FDR)={p:.3f} {sig})", color='#4CAF50', pad=8)
         else:
             ax.set_title(label, color='#4CAF50', pad=8)
 
@@ -314,27 +401,56 @@ def main(exclude_dead=False, start_date=None, end_date=None):
         'gcc',
     ]
 
-    # Run stats
-    results = []
-    stats_dict = {}
-    for m in test_metrics:
-        if m in df.columns and df[m].notna().sum() > 5:
-            r = run_stats(df, m)
-            results.append(r)
-            stats_dict[m] = r
+    def run_family(sub_start=None, sub_end=None):
+        """Run every metric over one window, then FDR-correct the family."""
+        rows = []
+        for m in test_metrics:
+            if m in df.columns and df[m].notna().sum() > 5:
+                rows.append(run_stats(df, m, sub_start, sub_end))
+        return apply_fdr(rows)
 
-    # Save summary CSV — always write headers so dashboard never reads an empty file
-    COLS = ['metric', 'n_enriched', 'n_control', 'mean_enriched', 'mean_control',
-            'U_stat', 'p_value', 'significant', 'cohens_d', 'effect_size']
-    stats_df = pd.DataFrame(results, columns=COLS) if results else pd.DataFrame(columns=COLS)
+    # ── Overall test (pot-level, FDR-corrected) ────────────────────────────────
+    results = run_family()
+    stats_dict = {r['metric']: r for r in results}
+
+    stats_df = (pd.DataFrame(results, columns=RESULT_COLS)
+                if results else pd.DataFrame(columns=RESULT_COLS))
     out_csv = RESULTS_DIR / 'stats_summary.csv'
     stats_df.to_csv(out_csv, index=False)
-    print(f"\n  Stats summary saved to {out_csv}")
+    print(f"\n  Overall pot-level stats saved to {out_csv}")
+    print(f"  Unit of replication: pot (n≤8 per chamber). p-values are "
+          f"Benjamini-Hochberg FDR-adjusted; 'significant' uses the adjusted p.")
     if not stats_df.empty:
         print()
-        print(stats_df[['metric', 'mean_enriched', 'mean_control', 'p_value', 'significant', 'cohens_d', 'effect_size']].to_string(index=False))
+        print(stats_df[['metric', 'n_enriched', 'n_control', 'mean_enriched',
+                        'mean_control', 'p_value', 'p_value_adj', 'significant',
+                        'cliffs_delta', 'effect_size']].to_string(index=False))
     else:
         print("  No data in selected date range — empty results written.")
+
+    # ── Per-stage exploratory tests ────────────────────────────────────────────
+    stage_rows = []
+    for name, s, e in STAGES:
+        fam = run_family(s, e)
+        for r in fam:
+            stage_rows.append({'stage': name, **r})
+    stage_df = (pd.DataFrame(stage_rows, columns=['stage'] + RESULT_COLS)
+                if stage_rows else pd.DataFrame(columns=['stage'] + RESULT_COLS))
+    stage_csv = RESULTS_DIR / 'stats_by_stage.csv'
+    stage_df.to_csv(stage_csv, index=False)
+    print(f"\n  Per-stage (exploratory) stats saved to {stage_csv}")
+    if not stage_df.empty:
+        print(stage_df[['stage', 'metric', 'mean_enriched', 'mean_control',
+                        'p_value', 'p_value_adj', 'significant',
+                        'cliffs_delta']].to_string(index=False))
+
+    # ── Honest caveat, printed every run ───────────────────────────────────────
+    print("\n  " + "-" * 70)
+    print("  CAVEAT: CO2 is applied at chamber level with ONE chamber per")
+    print("  treatment, so pots are sub-samples, not true replicates of the CO2")
+    print("  effect. These tests describe THIS chamber pair. Per-stage windows")
+    print("  are post-hoc/descriptive → treat per-stage results as exploratory.")
+    print("  " + "-" * 70)
 
     # Plot growth curves
     print("\n  Generating plots...")
